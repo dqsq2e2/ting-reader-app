@@ -1,0 +1,29 @@
+# Node
+node_modules/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Android
+android/app/build/
+android/.gradle/
+android/local.properties
+android/app/release.keystore
+android/app/debug.keystore
+.idea/
+.gradle/
+*.iml
+*.log
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Capacitor
+capacitor.config.json.timestamp
