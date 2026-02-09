@@ -2,6 +2,8 @@
 
 Ting Reader 的 Android 客户端前端项目。本项目基于 `ting-reader-client` 构建，使用 Capacitor 打包为 Android 应用。
 
+**系统要求**: Android 7.0 (Nougat) 及以上版本。
+
 ## 功能特性
 
 本项目针对移动端使用场景进行了以下优化和适配：
