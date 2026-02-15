@@ -72,7 +72,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       const playedChapters = [...chapters].filter(c => !!getProgressUpdatedAt(c));
       if (playedChapters.length > 0) {
         playedChapters.sort((a, b) => {
-          return new Date(getProgressUpdatedAt(b) || 0).getTime() - new Date(getProgressUpdatedAt(a) || 0).getTime();
+          const dateA = new Date(getProgressUpdatedAt(a)!);
+          const dateB = new Date(getProgressUpdatedAt(b)!);
+          return dateB.getTime() - dateA.getTime();
         });
         chapter = playedChapters[0];
       } else {
@@ -199,7 +201,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         if (duration > 0 && startTime > 0) {
              const timeLeft = duration - startTime;
              if (timeLeft < 5 || (startTime / duration) > 0.99) {
-                 console.log(`[PlayerStore] Chapter ${chapter.title} considered finished, restarting.`);
                  startTime = 0;
              }
         }

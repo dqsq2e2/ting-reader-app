@@ -188,6 +188,7 @@ const Player: React.FC = () => {
   const API_BASE_URL = activeUrl || serverUrl || import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? '' : 'http://localhost:3000');
   
   const [cachedUri, setCachedUri] = useState<{id: string, path: string} | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const downloadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const downloadingFileRef = useRef<string | null>(null);
@@ -416,6 +417,9 @@ const Player: React.FC = () => {
                               }
                           }
 
+                          // Prevent polling from overwriting store while user is seeking
+                          if (isSeekingRef.current) return;
+
                           setCurrentTime(position);
                           
                           // Also update duration if available
@@ -521,6 +525,7 @@ const Player: React.FC = () => {
   }, [currentChapter?.id]);
 
   const audioRef = useRef<HTMLAudioElement>(null); // Keep for Electron fallback? No, let's remove usage for App.
+  const isSeekingRef = useRef(false);
 
   const location = useLocation();
   // const [isExpanded, setIsExpanded] = useState(false); // Moved to store
@@ -696,6 +701,7 @@ const Player: React.FC = () => {
   useEffect(() => {
     isInitialLoadRef.current = true;
     setBufferedTime(0);
+    setRetryCount(0);
   }, [currentChapter?.id]);
 
 
@@ -1079,6 +1085,11 @@ const Player: React.FC = () => {
   const [isSeeking, setIsSeeking] = useState(false);
   const [seekTime, setSeekTime] = useState(0);
 
+  // Sync ref for polling loop
+  useEffect(() => {
+    isSeekingRef.current = isSeeking;
+  }, [isSeeking]);
+
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
     setSeekTime(time);
@@ -1220,7 +1231,7 @@ const Player: React.FC = () => {
       {typeof (window as WindowWithMedia).electronAPI !== 'undefined' && (
         <audio
           ref={audioRef}
-          src={getStreamUrl(currentChapter.id)}
+          src={getStreamUrl(currentChapter.id) + (retryCount > 0 ? `&retry=${retryCount}` : '')}
           preload="auto"
           crossOrigin="anonymous"
           onTimeUpdate={handleTimeUpdate}
@@ -1237,6 +1248,15 @@ const Player: React.FC = () => {
                 console.log('Playback aborted (normal)');
                 return;
               }
+
+              // Auto retry on decode error (code 3)
+            if (audio.error.code === 3 && retryCount < 3) {
+                 console.log(`Playback decode error, retrying (${retryCount + 1}/3)...`);
+                 isInitialLoadRef.current = true;
+                 setRetryCount(prev => prev + 1);
+                 return;
+            }
+
               console.error('Audio element error', audio.error);
               
               // If we were trying to play a cached file and it failed, fallback to network
