@@ -1,21 +1,53 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# Capacitor ProGuard Rules
+-keep public class * extends com.getcapacitor.Plugin
+-keep public class * extends com.getcapacitor.BridgeActivity
+-keep class com.getcapacitor.Plugin
+-keep class com.getcapacitor.BridgeActivity
+-keep class com.getcapacitor.Bridge
+-keep class com.getcapacitor.BridgeWebViewClient
+-keep class com.getcapacitor.BridgeWebChromeClient
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Cordova Plugins
+-keep class org.apache.cordova.** { *; }
+-keep public class * extends org.apache.cordova.CordovaPlugin
+-keep public class * extends org.apache.cordova.CordovaInterface
+-keep public class * extends org.apache.cordova.CordovaWebView
+-keep public class * extends org.apache.cordova.CordovaWebViewEngine
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Specific Plugins Rules
+# capacitor-music-controls-plugin might use reflection or specific class names
+-keep class com.ingageco.capacitormusiccontrols.** { *; }
+# cordova-plugin-media
+-keep class org.apache.cordova.media.** { *; }
+# cordova-plugin-file
+-keep class org.apache.cordova.file.** { *; }
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Keep all classes in the app package
+-keep class com.tingreader.app.** { *; }
+
+# Keep R class members
+-keepclassmembers class **.R$* {
+    public static <fields>;
+}
+
+# Keep Capacitor Annotation
+-keep @interface com.getcapacitor.annotation.CapacitorPlugin
+-keepclasseswithmembers class * {
+    @com.getcapacitor.annotation.CapacitorPlugin <methods>;
+}
+
+# Keep javascript interface methods
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
+
+# AndroidX and Support Library
+-keep class androidx.appcompat.** { *; }
+-keep class androidx.core.** { *; }
+-keep interface androidx.** { *; }
+
+# Allow obfuscation of other libraries but keep line numbers for stack traces
+-keepattributes SourceFile,LineNumberTable
+-keepattributes *Annotation*
+-keepattributes Signature
+-keepattributes Exceptions
