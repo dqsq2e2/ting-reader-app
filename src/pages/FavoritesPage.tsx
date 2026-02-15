@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import apiClient from '../api/client';
 import type { Book } from '../types';
 import BookCard from '../components/BookCard';
-import { Heart, BookX } from 'lucide-react';
+import { Heart } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { usePlayerStore } from '../store/playerStore';
 
@@ -51,15 +51,15 @@ const FavoritesPage: React.FC = () => {
           ))}
         </div>
       ) : (
-        <div className="py-32 text-center bg-white dark:bg-slate-900 rounded-3xl border border-dashed border-slate-200 dark:border-slate-800">
-          <div className="inline-flex items-center justify-center w-24 h-24 rounded-full bg-red-50 dark:bg-red-900/10 text-red-400 mb-6">
-            <Heart size={48} />
+        <div className="py-16 text-center bg-white dark:bg-slate-900 rounded-3xl border border-dashed border-slate-200 dark:border-slate-800">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-red-50 dark:bg-red-900/10 text-red-400 mb-4">
+            <Heart size={32} />
           </div>
-          <h3 className="text-2xl font-bold dark:text-white">您的收藏夹还是空的</h3>
-          <p className="text-slate-500 mt-2 mb-8">点击书籍详情页的爱心图标，即可收藏您喜欢的作品</p>
+          <h3 className="text-lg font-bold dark:text-white">您的收藏夹还是空的</h3>
+          <p className="text-sm text-slate-500 mt-2 mb-6">点击书籍详情页的爱心图标，即可收藏您喜欢的作品</p>
           <Link 
             to="/bookshelf" 
-            className="px-8 py-3 bg-primary-600 hover:bg-primary-700 text-white font-bold rounded-xl shadow-lg shadow-primary-500/30 transition-all"
+            className="px-5 py-2.5 bg-primary-600 hover:bg-primary-700 text-white text-sm font-bold rounded-xl shadow-lg shadow-primary-500/30 transition-all active:scale-95"
           >
             去书架看看
           </Link>

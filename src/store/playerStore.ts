@@ -1,6 +1,17 @@
 import { create } from 'zustand';
 import type { Book, Chapter } from '../types';
 
+type ChapterProgressMeta = {
+  progress_updated_at?: string;
+  progress_position?: number;
+};
+
+const getProgressUpdatedAt = (chapter: Chapter) => (chapter as Chapter & ChapterProgressMeta).progress_updated_at;
+const getProgressPosition = (chapter: Chapter) => {
+  const value = (chapter as Chapter & ChapterProgressMeta).progress_position;
+  return typeof value === 'number' ? value : 0;
+};
+
 interface PlayerState {
   currentBook: Book | null;
   currentChapter: Chapter | null;
@@ -13,10 +24,12 @@ interface PlayerState {
   themeColor: string;
   isExpanded: boolean;
   chapterProgress: Record<string, number>;
+  clientAutoDownload: boolean;
   
   // Actions
   playBook: (book: Book, chapters: Chapter[], startChapterId?: string) => void;
   togglePlay: () => void;
+  setClientAutoDownload: (enabled: boolean) => void;
   setCurrentTime: (time: number) => void;
   setDuration: (duration: number) => void;
   setPlaybackSpeed: (speed: number) => void;
@@ -41,7 +54,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   themeColor: '#F2EDE4', // Default background color
   isExpanded: false,
   chapterProgress: {},
+  clientAutoDownload: false,
 
+  setClientAutoDownload: (enabled) => set({ clientAutoDownload: enabled }),
   setIsPlaying: (isPlaying) => set({ isPlaying }),
   setIsExpanded: (isExpanded) => set({ isExpanded }),
 
@@ -54,10 +69,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       chapter = chapters.find(c => c.id === startChapterId) || chapters[0];
     } else {
       // Sort by progress_updated_at descending and take the first one that has progress
-      const playedChapters = [...chapters].filter(c => (c as any).progress_updated_at);
+      const playedChapters = [...chapters].filter(c => !!getProgressUpdatedAt(c));
       if (playedChapters.length > 0) {
         playedChapters.sort((a, b) => {
-          return new Date((b as any).progress_updated_at).getTime() - new Date((a as any).progress_updated_at).getTime();
+          return new Date(getProgressUpdatedAt(b) || 0).getTime() - new Date(getProgressUpdatedAt(a) || 0).getTime();
         });
         chapter = playedChapters[0];
       } else {
@@ -66,7 +81,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
     
     // Determine start time: local memory > server data > 0
-    const progress = chapterProgress[chapter.id] ?? ((chapter as any).progress_position || 0);
+    const progress = chapterProgress[chapter.id] ?? getProgressPosition(chapter);
 
     const newState: Partial<PlayerState> = { 
       currentBook: book, 
@@ -115,7 +130,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       const nextChapter = chapters[index + 1];
       
       // Get saved progress
-      let progress = chapterProgress[nextChapter.id] ?? ((nextChapter as any).progress_position || 0);
+      let progress = chapterProgress[nextChapter.id] ?? getProgressPosition(nextChapter);
       const duration = nextChapter.duration || 0;
 
       // Smart Resume Logic:
@@ -148,7 +163,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       const prevChapter = chapters[index - 1];
       
       // Get saved progress
-      let progress = chapterProgress[prevChapter.id] ?? ((prevChapter as any).progress_position || 0);
+      let progress = chapterProgress[prevChapter.id] ?? getProgressPosition(prevChapter);
       const duration = prevChapter.duration || 0;
 
       // Smart Resume Logic:
@@ -177,7 +192,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     if (resumePosition !== undefined) {
         startTime = resumePosition;
     } else {
-        startTime = chapterProgress[chapter.id] ?? ((chapter as any).progress_position || 0);
+        startTime = chapterProgress[chapter.id] ?? getProgressPosition(chapter);
         
         // Smart Resume for direct play as well
         const duration = chapter.duration || 0;

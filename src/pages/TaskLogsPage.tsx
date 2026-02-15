@@ -26,7 +26,6 @@ const TaskLogsPage: React.FC = () => {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-
   useEffect(() => {
     fetchTasks();
     let interval: ReturnType<typeof setInterval>;
@@ -39,7 +38,9 @@ const TaskLogsPage: React.FC = () => {
   const fetchTasks = async () => {
     try {
       const response = await apiClient.get('/api/tasks');
-      setTasks(response.data);
+      // Filter out download tasks (type='download')
+      const systemTasks = response.data.filter((t: Task) => t.type !== 'download');
+      setTasks(systemTasks);
     } catch (err) {
       console.error('Failed to fetch tasks', err);
     } finally {

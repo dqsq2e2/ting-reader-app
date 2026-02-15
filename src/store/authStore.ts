@@ -20,7 +20,7 @@ interface AuthState {
   logout: () => void;
 }
 
-const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI;
+const isElectron = typeof window !== 'undefined' && typeof (window as { electronAPI?: unknown }).electronAPI !== 'undefined';
 const defaultServerUrl = isElectron ? '' : (import.meta.env.PROD ? window.location.origin : 'http://localhost:3000');
 
 export const useAuthStore = create<AuthState>((set) => ({

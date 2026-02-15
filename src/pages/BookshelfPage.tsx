@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import apiClient from '../api/client';
 import type { Book, Library } from '../types';
 import BookCard from '../components/BookCard';
@@ -7,7 +7,6 @@ import { Search, Filter, Database, Plus, Library as LibraryIcon } from 'lucide-r
 import { usePlayerStore } from '../store/playerStore';
 
 const BookshelfPage: React.FC = () => {
-  const navigate = useNavigate();
   const currentChapter = usePlayerStore((state) => state.currentChapter);
   const [books, setBooks] = useState<Book[]>([]);
   const [libraries, setLibraries] = useState<Library[]>([]);
@@ -159,17 +158,17 @@ const BookshelfPage: React.FC = () => {
           )}
         </>
       ) : (
-        <div className="py-24 text-center bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm">
-          <div className="inline-flex items-center justify-center w-24 h-24 rounded-full bg-primary-50 dark:bg-primary-900/20 text-primary-600 mb-6">
-            <Database size={48} />
+        <div className="py-16 text-center bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-primary-50 dark:bg-primary-900/20 text-primary-600 mb-4">
+            <Database size={32} />
           </div>
-          <h3 className="text-2xl font-bold dark:text-white mb-3">书架空空如也</h3>
-          <p className="text-slate-500 max-w-md mx-auto mb-10">您还没有添加任何存储库，或者存储库中还没有扫描到音频文件。</p>
+          <h3 className="text-lg font-bold dark:text-white mb-2">书架空空如也</h3>
+          <p className="text-sm text-slate-500 max-w-md mx-auto mb-6">您还没有添加任何存储库，或者存储库中还没有扫描到音频文件。</p>
           <Link 
             to="/admin/libraries"
-            className="inline-flex items-center gap-2 px-8 py-4 bg-primary-600 hover:bg-primary-700 text-white font-bold rounded-2xl shadow-xl shadow-primary-500/30 transition-all active:scale-95"
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary-600 hover:bg-primary-700 text-white text-sm font-bold rounded-xl shadow-lg shadow-primary-500/30 transition-all active:scale-95"
           >
-            <Plus size={20} />
+            <Plus size={18} />
             配置存储库
           </Link>
         </div>

@@ -5,11 +5,13 @@ import { Loader2 } from 'lucide-react';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { SplashScreen } from '@capacitor/splash-screen';
 import { CapacitorHttp } from '@capacitor/core';
-import { App } from '@capacitor/app';
-import { usePlayerStore } from '../store/playerStore';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Filesystem } from '@capacitor/filesystem';
 import logoImg from '../assets/logo.png';
+
+type WindowWithElectron = {
+  electronAPI?: unknown;
+};
 
 interface AppInitializerProps {
   children: React.ReactNode;
@@ -23,7 +25,7 @@ const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
   const location = useLocation();
 
   // Check if running in Electron
-  const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI;
+  const isElectron = typeof window !== 'undefined' && !!(window as WindowWithElectron).electronAPI;
   // Check if running in App (Capacitor) - this project is specifically for App
   const isApp = true; 
 
@@ -70,9 +72,16 @@ const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
       const savedPassword = localStorage.getItem('saved_password');
       const serverUrl = localStorage.getItem('server_url');
 
-      // If we are already on the login page, skip auto-login
-      if (location.pathname === '/login') {
+      // If we are already on the login or offline page, skip auto-login
+      if (location.pathname === '/login' || location.pathname === '/downloads' || location.pathname.startsWith('/offline')) {
         setIsInitializing(false);
+        if (isApp) SplashScreen.hide().catch(() => {});
+        return;
+      }
+
+      if (!navigator.onLine) {
+        setIsInitializing(false);
+        if (isApp) SplashScreen.hide().catch(() => {});
         return;
       }
 
@@ -202,7 +211,7 @@ const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
     };
 
     initializeApp();
-  }, [isElectron, isApp, setActiveUrl, setAuth, setServerUrl]);
+  }, [isElectron, isApp, setActiveUrl, setAuth, setServerUrl, location.pathname, navigate]);
 
   if (isInitializing) {
     return (
@@ -220,6 +229,16 @@ const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
               <Loader2 size={16} className="animate-spin" />
               <span className="text-sm font-medium">{statusMessage}</span>
             </div>
+            <button 
+              onClick={() => {
+                setIsInitializing(false);
+                if (isApp) SplashScreen.hide().catch(() => {});
+                navigate('/login');
+              }}
+              className="mt-4 px-6 py-2 rounded-full text-sm font-medium bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 shadow-sm active:scale-95 transition-all"
+            >
+              取消连接
+            </button>
           </div>
         </div>
       </div>

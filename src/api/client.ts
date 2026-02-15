@@ -1,6 +1,12 @@
 import axios from 'axios';
 import { useAuthStore } from '../store/authStore';
 
+type WindowWithElectron = {
+  electronAPI?: {
+    resolveRedirect: (url: string) => Promise<string>;
+  };
+};
+
 // Initial base URL
 // For Capacitor App, we must ensure we don't default to relative URL if no server_url is set
 const isApp = true; // This codebase is for the App
@@ -15,6 +21,27 @@ const apiClient = axios.create({
 
 apiClient.interceptors.request.use((config) => {
   const { token, activeUrl } = useAuthStore.getState();
+
+  // Offline Mode Check
+  // If we are on the downloads page, we should block API requests to avoid errors
+  // EXCEPT for requests to local proxy or non-api endpoints if any
+  const isOffline = !navigator.onLine;
+  const isDownloadsPage = window.location.pathname.startsWith('/downloads') || window.location.pathname.startsWith('/offline');
+  const isApiRequest = config.url?.startsWith('http') || (config.baseURL && config.baseURL.startsWith('http'));
+
+  if ((isDownloadsPage || isOffline) && isApiRequest) {
+      // If user is offline OR on downloads page without a valid session (implied by usage context), 
+      // block external API calls to prevent noise.
+      // But allow if we are online and just happen to be on downloads page (e.g. for cover repair)
+      if (!token || isOffline) {
+          const controller = new AbortController();
+          config.signal = controller.signal;
+          controller.abort('Offline Mode');
+          // Return a promise that never resolves/rejects effectively? 
+          // Or reject with a specific error that we can catch and ignore.
+          // Axios cancel token is the standard way.
+      }
+  }
   
   // Update baseURL dynamically from store
   if (activeUrl && !config.url?.startsWith('http')) {
@@ -48,8 +75,9 @@ apiClient.interceptors.response.use(
 
     // Handle Network Error or Connection Refused (potentially redirect expired)
     // Only in Electron environment where we manage serverUrl/activeUrl
-    if (!error.response && !originalRequest._retry && (window as any).electronAPI) {
-      const { serverUrl, activeUrl, setActiveUrl } = useAuthStore.getState();
+    const electronApi = (window as WindowWithElectron).electronAPI;
+    if (!error.response && !originalRequest._retry && electronApi) {
+      const { serverUrl, setActiveUrl } = useAuthStore.getState();
 
       // If we have a serverUrl and it's different or we want to re-verify
       if (serverUrl) {
@@ -58,7 +86,7 @@ apiClient.interceptors.response.use(
         
         try {
            // Call Electron IPC to resolve again
-           const newUrl = await (window as any).electronAPI.resolveRedirect(serverUrl);
+           const newUrl = await electronApi.resolveRedirect(serverUrl);
            
            // In main.js, resolve-redirect returns the URL string directly
            if (newUrl && typeof newUrl === 'string') {

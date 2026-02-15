@@ -15,6 +15,10 @@ const patches = [
   {
     src: 'patches/files/capacitor-music-controls-plugin/android/src/main/java/com/ingageco/capacitormusiccontrols/MusicControlsNotification.java',
     dest: 'node_modules/capacitor-music-controls-plugin/android/src/main/java/com/ingageco/capacitormusiccontrols/MusicControlsNotification.java'
+  },
+  {
+    src: 'patches/files/capacitor-music-controls-plugin/android/src/main/java/com/ingageco/capacitormusiccontrols/MediaSessionCallback.java',
+    dest: 'node_modules/capacitor-music-controls-plugin/android/src/main/java/com/ingageco/capacitormusiccontrols/MediaSessionCallback.java'
   }
 ];
 

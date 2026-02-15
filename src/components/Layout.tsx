@@ -1,4 +1,4 @@
-import React, { useState, Suspense } from 'react';
+import React, { useState } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import { 
   Home, 
@@ -6,14 +6,13 @@ import {
   Search, 
   Heart, 
   Settings, 
-  User, 
   LogOut, 
   Menu, 
   X,
   Database,
   Users,
   Terminal,
-  Headphones
+  Download
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { useTheme } from '../hooks/useTheme';
@@ -23,9 +22,57 @@ import logoImg from '../assets/logo.png';
 
 import Player from './Player';
 
+type MenuItem = {
+  icon: React.ReactElement;
+  label: string;
+  path: string;
+};
+
+type NavLinkProps = {
+  item: MenuItem;
+  mobile?: boolean;
+  isActive: boolean;
+  onClick?: () => void;
+};
+
+const NavLink: React.FC<NavLinkProps> = ({ item, mobile = false, isActive, onClick }) => {
+  if (mobile) {
+    return (
+      <Link
+        to={item.path}
+        className={`flex flex-col items-center justify-center flex-1 py-1 transition-all ${
+          isActive ? 'text-primary-600' : 'text-slate-500 dark:text-slate-400'
+        }`}
+      >
+        <div className={`p-1.5 rounded-xl transition-all ${isActive ? 'bg-primary-50 dark:bg-primary-900/20' : ''}`}>
+          {React.cloneElement(item.icon, { size: 22 })}
+        </div>
+        <span className="text-[10px] font-bold mt-0.5">{item.label}</span>
+      </Link>
+    );
+  }
+
+  return (
+    <Link
+      to={item.path}
+      onClick={onClick}
+      className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
+        isActive 
+          ? 'bg-primary-600 text-white shadow-lg shadow-primary-500/30' 
+          : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+      }`}
+    >
+      {item.icon}
+      <span className="font-medium">{item.label}</span>
+    </Link>
+  );
+};
+
 const Layout: React.FC = () => {
   const { refreshTheme } = useTheme(); // Initialize theme application
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(true);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
   
@@ -35,9 +82,33 @@ const Layout: React.FC = () => {
   const hasCurrentChapter = usePlayerStore(state => !!state.currentChapter);
   const setPlaybackSpeed = usePlayerStore(state => state.setPlaybackSpeed);
 
+  // Validate Token on Mount
+  React.useEffect(() => {
+    const validateConnection = async () => {
+      setIsConnecting(true);
+      setConnectionError(null);
+      try {
+        // Try to fetch current user info to validate token
+        await apiClient.get('/api/me');
+        setIsConnecting(false);
+      } catch (err) {
+        console.error('Connection validation failed', err);
+        // Don't auto-logout immediately, give user a chance to see error or retry
+        setConnectionError('连接服务器失败或登录已过期');
+        setIsConnecting(false);
+      }
+    };
+
+    if (user) {
+      validateConnection();
+    } else {
+      setIsConnecting(false);
+    }
+  }, [user]);
+
   // Fetch and apply user settings
   React.useEffect(() => {
-    if (user) {
+    if (user && !isConnecting && !connectionError) {
       apiClient.get('/api/settings').then(res => {
         const settings = res.data;
         if (settings.playback_speed) {
@@ -45,64 +116,89 @@ const Layout: React.FC = () => {
         }
       }).catch(err => console.error('Failed to sync user settings', err));
     }
-  }, [user?.id, setPlaybackSpeed]);
+  }, [user, setPlaybackSpeed, isConnecting, connectionError]);
 
   React.useEffect(() => {
     refreshTheme();
-  }, []);
+  }, [refreshTheme]);
 
-  const menuItems = [
+  const menuItems: MenuItem[] = [
     { icon: <Home size={20} />, label: '首页', path: '/' },
     { icon: <Library size={20} />, label: '书架', path: '/bookshelf' },
     { icon: <Search size={20} />, label: '搜索', path: '/search' },
     { icon: <Heart size={20} />, label: '收藏', path: '/favorites' },
   ];
 
-  const adminItems = [
+  const adminItems: MenuItem[] = [
     { icon: <Database size={20} />, label: '库管理', path: '/admin/libraries' },
     { icon: <Terminal size={20} />, label: '任务日志', path: '/admin/tasks' },
     { icon: <Users size={20} />, label: '用户管理', path: '/admin/users' },
   ];
+  const cacheItem: MenuItem = { icon: <Download size={20} />, label: '缓存管理', path: '/downloads' };
+  const adminMenuItems = user?.role === 'admin'
+    ? [adminItems[0], cacheItem, ...adminItems.slice(1)]
+    : user
+      ? [cacheItem]
+      : [];
 
   const handleLogout = () => {
     logout();
     navigate('/login');
   };
 
-  const NavLink = ({ item, mobile = false }: { item: typeof menuItems[0], mobile?: boolean }) => {
-    const isActive = location.pathname === item.path;
-    
-    if (mobile) {
-      return (
-        <Link
-          to={item.path}
-          className={`flex flex-col items-center justify-center flex-1 py-1 transition-all ${
-            isActive ? 'text-primary-600' : 'text-slate-500 dark:text-slate-400'
-          }`}
-        >
-          <div className={`p-1.5 rounded-xl transition-all ${isActive ? 'bg-primary-50 dark:bg-primary-900/20' : ''}`}>
-            {React.cloneElement(item.icon as React.ReactElement<any>, { size: 22 })}
-          </div>
-          <span className="text-[10px] font-bold mt-0.5">{item.label}</span>
-        </Link>
-      );
-    }
-
+  // Connection Check / Loading Screen
+  if (isConnecting || connectionError) {
     return (
-      <Link
-        to={item.path}
-        onClick={() => setIsSidebarOpen(false)}
-        className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
-          isActive 
-            ? 'bg-primary-600 text-white shadow-lg shadow-primary-500/30' 
-            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
-        }`}
-      >
-        {item.icon}
-        <span className="font-medium">{item.label}</span>
-      </Link>
+      <div className="flex flex-col items-center justify-center h-screen bg-slate-50 dark:bg-slate-950 p-4">
+        <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl shadow-xl p-8 text-center space-y-6 border border-slate-200 dark:border-slate-800">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-primary-50 dark:bg-primary-900/20 mb-2">
+            <img src={logoImg} alt="Logo" className="w-10 h-10 object-contain" />
+          </div>
+          
+          {isConnecting ? (
+            <>
+              <h2 className="text-xl font-bold dark:text-white">正在连接服务器...</h2>
+              <div className="flex justify-center">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+              </div>
+              <p className="text-sm text-slate-500">正在验证您的登录凭证</p>
+            </>
+          ) : (
+            <>
+              <h2 className="text-xl font-bold text-slate-900 dark:text-white">连接失败</h2>
+              <p className="text-sm text-red-500 bg-red-50 dark:bg-red-900/10 p-3 rounded-lg border border-red-100 dark:border-red-900/20">
+                {connectionError}
+              </p>
+              <div className="space-y-3 pt-2">
+                <button
+                  onClick={() => window.location.reload()}
+                  className="w-full py-2.5 bg-primary-600 hover:bg-primary-700 text-white font-bold rounded-xl transition-colors"
+                >
+                  重试连接
+                </button>
+                <button
+                  onClick={handleLogout}
+                  className="w-full py-2.5 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 font-bold rounded-xl transition-colors"
+                >
+                  退出登录
+                </button>
+              </div>
+            </>
+          )}
+
+          {isConnecting && (
+            <button
+              onClick={handleLogout}
+              className="mt-4 text-sm text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 font-medium transition-colors"
+            >
+              取消并退出登录
+            </button>
+          )}
+        </div>
+      </div>
     );
-  };
+  }
+
 
   return (
     <div className="flex h-screen bg-slate-50 dark:bg-slate-950 overflow-hidden">
@@ -128,12 +224,26 @@ const Layout: React.FC = () => {
           <nav className="flex-1 space-y-1 overflow-y-auto custom-scrollbar">
             <div className="xl:block hidden">
               <div className="text-xs font-bold text-slate-400 uppercase tracking-widest px-4 mb-2 mt-4">主菜单</div>
-              {menuItems.map((item) => <NavLink key={item.path} item={item} />)}
+              {menuItems.filter(item => !user || item.path !== '/downloads').map((item) => (
+                <NavLink
+                  key={item.path}
+                  item={item}
+                  isActive={location.pathname === item.path}
+                  onClick={() => setIsSidebarOpen(false)}
+                />
+              ))}
             </div>
 
             <div className="xl:mt-8">
               <div className="text-xs font-bold text-slate-400 uppercase tracking-widest px-4 mb-2 mt-4 xl:mt-0">管理后台</div>
-              {user?.role === 'admin' && adminItems.map((item) => <NavLink key={item.path} item={item} />)}
+              {adminMenuItems.map((item) => (
+                <NavLink
+                  key={item.path}
+                  item={item}
+                  isActive={location.pathname === item.path}
+                  onClick={() => setIsSidebarOpen(false)}
+                />
+              ))}
               <Link
                 to="/settings"
                 onClick={() => setIsSidebarOpen(false)}
@@ -207,7 +317,14 @@ const Layout: React.FC = () => {
             height: 'calc(var(--bottom-nav-h) + env(safe-area-inset-bottom, 0px))'
           }}
         >
-          {menuItems.map((item) => <NavLink key={item.path} item={item} mobile />)}
+          {menuItems.map((item) => (
+            <NavLink
+              key={item.path}
+              item={item}
+              mobile
+              isActive={location.pathname === item.path}
+            />
+          ))}
         </div>
 
         {/* Player - Moved inside the right-side container to prevent sidebar overlap */}

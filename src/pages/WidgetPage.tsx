@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import apiClient from '../api/client';
 import Player from '../components/Player';
+import type { Book, Chapter } from '../types';
 import { usePlayerStore } from '../store/playerStore';
 import { useAuthStore } from '../store/authStore';
 import { Search, ArrowLeft, User, Lock, LogIn } from 'lucide-react';
@@ -14,7 +15,7 @@ const WidgetPage: React.FC = () => {
   const { setToken, setAuth, isAuthenticated } = useAuthStore();
   const { playChapter } = usePlayerStore();
   
-  const [books, setBooks] = useState<any[]>([]);
+  const [books, setBooks] = useState<Book[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [showBookList, setShowBookList] = useState(!id);
@@ -89,17 +90,17 @@ const WidgetPage: React.FC = () => {
           const chaptersRes = await apiClient.get(`/api/books/${id}/chapters`);
           const chapters = chaptersRes.data;
           
-          let progress = { chapter_id: '' };
+          let progress: { chapter_id?: string } = {};
           try {
              const progressRes = await apiClient.get(`/api/progress/${id}`);
              progress = progressRes.data;
-          } catch (e) {
-            // Ignore progress fetch error, maybe new book
+          } catch {
+            void 0;
           }
           
           let targetChapter = chapters[0];
           if (progress?.chapter_id) {
-            targetChapter = chapters.find((c: any) => c.id === progress.chapter_id) || chapters[0];
+            targetChapter = chapters.find((c: Chapter) => c.id === progress.chapter_id) || chapters[0];
           }
           
           playChapter(book, chapters, targetChapter);
@@ -110,7 +111,7 @@ const WidgetPage: React.FC = () => {
       };
       loadBook();
     }
-  }, [id, isAuthenticated]);
+  }, [id, isAuthenticated, playChapter]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -122,8 +123,9 @@ const WidgetPage: React.FC = () => {
       const { token, user } = response.data;
       setAuth(user, token);
       // Login successful, state updates will trigger re-renders
-    } catch (err: any) {
-      setLoginError(err.response?.data?.error || '登录失败');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '登录失败';
+      setLoginError(message);
     } finally {
       setIsLoggingIn(false);
     }

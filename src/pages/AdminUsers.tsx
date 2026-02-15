@@ -1,9 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import apiClient from '../api/client';
-import type { User as UserType } from '../types';
+import type { User as UserType, Library, Book } from '../types';
 import { 
   Plus, 
-  User, 
   Users,
   Trash2, 
   Shield, 
@@ -15,12 +14,19 @@ import {
 
 const AdminUsers: React.FC = () => {
   const [users, setUsers] = useState<UserType[]>([]);
-  const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   
-  const [libraries, setLibraries] = useState<any[]>([]);
-  const [formData, setFormData] = useState({
+  type UserFormData = {
+    username: string;
+    password: string;
+    role: 'user' | 'admin';
+    librariesAccessible: string[];
+    booksAccessible: string[];
+  };
+
+  const [libraries, setLibraries] = useState<Library[]>([]);
+  const [formData, setFormData] = useState<UserFormData>({
     username: '',
     password: '',
     role: 'user' as 'user' | 'admin',
@@ -30,8 +36,8 @@ const AdminUsers: React.FC = () => {
   
   // Book Search
   const [bookSearchQuery, setBookSearchQuery] = useState('');
-  const [bookSearchResults, setBookSearchResults] = useState<any[]>([]);
-  const [selectedBooks, setSelectedBooks] = useState<any[]>([]);
+  const [bookSearchResults, setBookSearchResults] = useState<Book[]>([]);
+  const [selectedBooks, setSelectedBooks] = useState<Book[]>([]);
   const [isSearchingBooks, setIsSearchingBooks] = useState(false);
 
   useEffect(() => {
@@ -54,8 +60,6 @@ const AdminUsers: React.FC = () => {
       setUsers(response.data);
     } catch (err) {
       console.error('Failed to fetch users', err);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -97,7 +101,7 @@ const AdminUsers: React.FC = () => {
     const booksAccessible = Array.isArray(user.booksAccessible) ? user.booksAccessible : [];
     
     // Fetch details for selected books to display names
-    const books = [];
+    const books: Book[] = [];
     if (booksAccessible.length > 0) {
       // This is suboptimal (N requests), but simple. 
       // Better would be a bulk fetch endpoint or relying on client cache if available.
@@ -108,7 +112,9 @@ const AdminUsers: React.FC = () => {
         try {
           const res = await apiClient.get(`/api/books/${bid}`);
           books.push(res.data);
-        } catch (e) {}
+        } catch (err) {
+          console.error('Failed to fetch book detail', err);
+        }
       }
     }
     setSelectedBooks(books);
@@ -127,17 +133,21 @@ const AdminUsers: React.FC = () => {
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const payload = { ...formData };
+      const payload: UserFormData = { ...formData };
+      let requestPayload: Partial<UserFormData> = payload;
       
       // If admin, they have access to all, so we don't need to send specific libraries
       if (payload.role === 'admin') {
-        delete (payload as any).librariesAccessible;
-        delete (payload as any).booksAccessible;
+        requestPayload = {
+          username: payload.username,
+          password: payload.password,
+          role: payload.role
+        };
       }
 
       if (editingId) {
         const currentUser = users.find(u => u.id === editingId);
-        const updateData: any = {};
+        const updateData: Partial<UserFormData> = {};
         
         if (payload.username !== currentUser?.username) {
           updateData.username = payload.username;
@@ -158,7 +168,7 @@ const AdminUsers: React.FC = () => {
           await apiClient.patch(`/api/users/${editingId}`, updateData);
         }
       } else {
-        await apiClient.post('/api/users', payload);
+        await apiClient.post('/api/users', requestPayload);
       }
       setIsModalOpen(false);
       setFormData({ 
@@ -170,8 +180,9 @@ const AdminUsers: React.FC = () => {
       });
       setEditingId(null);
       fetchUsers();
-    } catch (err: any) {
-      alert(err.response?.data?.error || '操作失败');
+    } catch (err) {
+      const message = (err as { response?: { data?: { error?: string } } })?.response?.data?.error || '操作失败';
+      alert(message);
     }
   };
 
@@ -181,6 +192,7 @@ const AdminUsers: React.FC = () => {
       await apiClient.delete(`/api/users/${id}`);
       fetchUsers();
     } catch (err) {
+      console.error('Failed to delete user', err);
       alert('删除失败');
     }
   };
@@ -197,17 +209,7 @@ const AdminUsers: React.FC = () => {
         </div>
         <div className="flex items-center gap-3 w-full md:w-auto">
           <button 
-            onClick={() => {
-              setEditingId(null);
-              setFormData({ 
-                username: '', 
-                password: '', 
-                role: 'user',
-                librariesAccessible: [],
-                booksAccessible: []
-              });
-              setIsModalOpen(true);
-            }}
+            onClick={handleOpenAddModal}
             className="flex-1 md:flex-none flex items-center justify-center gap-2 px-4 md:px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white font-bold rounded-xl shadow-lg shadow-primary-500/30 transition-all text-sm md:text-base"
           >
             <Plus size={18} className="md:w-5 md:h-5" />

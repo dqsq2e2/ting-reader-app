@@ -321,3 +321,13 @@ export async function getCacheDir() {
     });
     return uri.uri;
 }
+
+export const mobileCacheManager = {
+    getCachedFile,
+    removeCachedFile,
+    getCacheStats,
+    ensureCacheLimits,
+    downloadToCache,
+    clearCache,
+    getCacheDir
+};

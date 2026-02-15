@@ -8,7 +8,7 @@ export const useTheme = () => {
     return (localStorage.getItem('theme') as Theme) || 'system';
   });
 
-  const applyTheme = (t: Theme) => {
+  const applyThemeToDom = (t: Theme) => {
     const root = window.document.documentElement;
     root.classList.remove('light', 'dark');
 
@@ -19,18 +19,22 @@ export const useTheme = () => {
 
     root.classList.add(effectiveTheme);
     localStorage.setItem('theme', t);
+  };
+
+  const applyTheme = (t: Theme) => {
+    applyThemeToDom(t);
     setTheme(t);
   };
 
   useEffect(() => {
     // Initial apply
-    applyTheme(theme);
+    applyThemeToDom(theme);
 
     // Listen for system theme changes if set to system
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const handleChange = () => {
       if (theme === 'system') {
-        applyTheme('system');
+        applyThemeToDom('system');
       }
     };
 
@@ -39,6 +43,10 @@ export const useTheme = () => {
   }, [theme]);
 
   const refreshTheme = async () => {
+    // Skip if offline or no token
+    const token = localStorage.getItem('auth_token');
+    if (!token || !navigator.onLine) return;
+
     try {
       const response = await apiClient.get('/api/settings');
       if (response.data.theme) {

@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import apiClient from '../api/client';
 import { useAuthStore } from '../store/authStore';
-import { Lock, User, Server } from 'lucide-react';
+import { Lock, User, Server, Download } from 'lucide-react';
 import { CapacitorHttp } from '@capacitor/core';
 import logoImg from '../assets/logo.png';
 
@@ -17,8 +16,20 @@ const LoginPage: React.FC = () => {
   const navigate = useNavigate();
   const { setAuth, setServerUrl, setActiveUrl, serverUrl: storedServerUrl } = useAuthStore();
   
+  type ElectronApi = {
+    getCacheSize?: () => Promise<number>;
+  };
+
+  type ApiError = {
+    response?: {
+      data?: {
+        error?: string;
+      };
+    };
+  };
+
   // Check if running in Electron
-  const isElectron = !!(window as any).electronAPI;
+  const isElectron = typeof window !== 'undefined' && typeof (window as { electronAPI?: ElectronApi }).electronAPI !== 'undefined';
   // For Android App (this project), we always need server address
   const isApp = true;
 
@@ -44,6 +55,14 @@ const LoginPage: React.FC = () => {
     setError('');
     setLoading(true);
 
+    // Offline Mode Button Action (Simulated for clarity, actual button might be separate)
+    // If user clicked "Offline Mode", we just navigate to downloads.
+    // But here we are in submit handler.
+    
+    // Check if we should even try to connect.
+    // If serverAddress is empty and we have saved data, maybe we can offline?
+    // But login usually implies online.
+    
     let finalServerAddress = serverAddress;
 
     try {
@@ -70,15 +89,15 @@ const LoginPage: React.FC = () => {
             finalServerAddress = `http://${finalServerAddress}`;
         }
         
+        // Fix double protocol if user pasted wrong (e.g. http://http://...)
+        // This regex replaces http://http:// with http://
+        finalServerAddress = finalServerAddress.replace(/^(https?:\/\/)\s*(https?:\/\/)/i, '$2');
+        
         // Update state to show sanitized URL to user
         setServerAddress(finalServerAddress);
         
         // Ensure we set the serverUrl in store
         setServerUrl(finalServerAddress); 
-        // We will assume serverAddress is the base URL for now since we removed resolveRedirect logic.
-        // If serverAddress redirects, fetch will follow it automatically.
-        // We should store the EFFECTIVE url if possible, but fetch doesn't easily expose the final URL of a redirect
-        // unless we inspect response.url.
         setActiveUrl(finalServerAddress);
       }
 
@@ -233,9 +252,10 @@ const LoginPage: React.FC = () => {
 
       setAuth(user, token);
       navigate('/');
-    } catch (err: any) {
+    } catch (err) {
       console.error('Login error:', err);
-      setError(err.response?.data?.error || '登录失败，请检查用户名和密码');
+      const message = (err as ApiError)?.response?.data?.error || '登录失败，请检查用户名和密码';
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -335,6 +355,17 @@ const LoginPage: React.FC = () => {
             >
               {loading ? '正在登录...' : '登录'}
             </button>
+            
+            {(isElectron || isApp) && (
+              <button
+                type="button"
+                onClick={() => navigate('/offline')}
+                className="w-full py-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-semibold rounded-lg shadow-sm transition-all flex items-center justify-center gap-2"
+              >
+                <Download size={18} />
+                离线模式 / 缓存管理
+              </button>
+            )}
           </form>
         </div>
       </div>

@@ -1,5 +1,5 @@
 import { Capacitor } from '@capacitor/core';
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
 import { usePlayerStore } from '../store/playerStore';
 import { useAuthStore } from '../store/authStore';
@@ -9,9 +9,6 @@ import {
   Pause, 
   SkipBack, 
   SkipForward, 
-  Volume2, 
-  VolumeX, 
-  FastForward, 
   ChevronUp,
   ChevronLeft,
   Maximize2,
@@ -23,12 +20,145 @@ import {
   ArrowLeft,
   ListMusic,
   X,
-  Check
+  Check,
+  Download,
+  Loader2
 } from 'lucide-react';
 import { getCoverUrl } from '../utils/image';
 import { toSolidColor } from '../utils/color';
 import { getCachedFile, downloadToCache, removeCachedFile } from '../utils/mobileCacheManager';
 import { CapacitorMusicControls as MusicControls } from 'capacitor-music-controls-plugin';
+import { useDownloadStore } from '../store/downloadStore';
+import type { Chapter } from '../types';
+
+type MediaError = {
+  code?: number;
+  message?: string;
+};
+
+type MediaInstance = {
+  play: () => void;
+  pause: () => void;
+  stop: () => void;
+  release: () => void;
+  getDuration: () => number;
+  getCurrentPosition: (success: (position: number) => void, error?: (err: MediaError) => void) => void;
+  seekTo: (positionMs: number) => void;
+  setVolume?: (volume: number) => void;
+  setRate?: (rate: number) => void;
+  _status?: number;
+  _resumeTime?: number;
+  _initialSeekDone?: boolean;
+};
+
+type MediaConstructor = new (
+  src: string,
+  success: () => void,
+  error: (err: MediaError) => void,
+  status: (status: number) => void
+) => MediaInstance;
+
+type WindowWithMedia = {
+  Media?: MediaConstructor;
+  electronAPI?: unknown;
+};
+
+interface ProgressBarProps {
+  isMini?: boolean;
+  isSeeking: boolean;
+  seekTime: number;
+  currentTime: number;
+  duration: number;
+  bufferedTime: number;
+  themeColor?: string | null;
+  onSeek: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onSeekStart: () => void;
+  onSeekEnd: (e: React.ChangeEvent<HTMLInputElement>) => void;
+}
+
+const ProgressBar: React.FC<ProgressBarProps> = ({ 
+  isMini = false, 
+  isSeeking, 
+  seekTime, 
+  currentTime, 
+  duration, 
+  bufferedTime, 
+  themeColor, 
+  onSeek, 
+  onSeekStart, 
+  onSeekEnd 
+}) => {
+  const displayTime = isSeeking ? seekTime : currentTime;
+  const playedPercent = (displayTime / (duration || 1)) * 100;
+  const bufferedPercent = (bufferedTime / (duration || 1)) * 100;
+  
+  // Safety check for themeColor
+  const safeThemeColor = themeColor || 'rgba(0,0,0,0.15)';
+  const isDarkMode = document.documentElement.classList.contains('dark');
+  const barColor = isDarkMode 
+    ? safeThemeColor.replace('0.15', '1.0').replace('0.1', '1.0') 
+    : safeThemeColor.replace('0.15', '1.0').replace('0.1', '1.0');
+
+  return (
+    <div 
+      className={`relative group/progress ${isMini ? 'flex-1 h-3 sm:h-2' : 'w-full h-4'} flex items-center select-none touch-none`}
+    >
+      {/* Track Background */}
+      <div 
+        className={`absolute left-0 right-0 top-1/2 -translate-y-1/2 ${isMini ? 'h-1' : 'h-1.5'} bg-slate-300 dark:bg-slate-900 rounded-full overflow-hidden`}
+        style={{
+          backgroundColor: themeColor ? (isMini ? themeColor.replace('0.15', '0.1').replace('0.1', '0.1') : 'rgba(0,0,0,0.2)') : undefined
+        }}
+      >
+        {/* Buffered Bar */}
+        <div 
+          className="absolute inset-y-0 left-0 bg-slate-400/30 dark:bg-slate-700/40 transition-all duration-300" 
+          style={{ width: `${bufferedPercent}%` }}
+        />
+        {/* Played Bar */}
+        <div 
+          className="absolute inset-y-0 left-0 z-10" 
+          style={{ 
+            width: `${playedPercent}%`,
+            backgroundColor: barColor,
+            boxShadow: `0 0 10px ${safeThemeColor.replace('0.15', '0.4').replace('0.1', '0.4')}`
+          }}
+        />
+      </div>
+
+      {/* Thumb / Handle */}
+      <div 
+        className={`absolute top-1/2 -translate-y-1/2 z-20 w-3 h-3 bg-white rounded-full shadow-md transition-transform duration-100 ease-out pointer-events-none ${isSeeking ? 'scale-150' : 'scale-100'}`}
+        style={{ 
+          left: `${playedPercent}%`, 
+          marginLeft: '-6px',
+          backgroundColor: isSeeking ? '#ffffff' : (barColor || '#ffffff'),
+          border: `1px solid ${barColor || 'transparent'}`
+        }}
+      />
+
+      {/* Range Input for Seeking - Positioned and sized correctly to cover the entire bar */}
+      <input 
+        type="range" 
+        min="0" 
+        max={duration || 0} 
+        step="any"
+        value={displayTime} 
+        onInput={onSeek}
+        onMouseDown={onSeekStart}
+        onTouchStart={onSeekStart}
+        onMouseUp={onSeekEnd}
+        onTouchEnd={onSeekEnd}
+        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-30"
+        style={{
+          margin: 0,
+          padding: 0,
+          WebkitAppearance: 'none'
+        }}
+      />
+    </div>
+  );
+};
 
 const Player: React.FC = () => {
   const { 
@@ -45,90 +175,24 @@ const Player: React.FC = () => {
     playbackSpeed,
     setPlaybackSpeed,
     volume,
-    setVolume,
     themeColor,
     setThemeColor,
     playChapter,
     setIsPlaying,
     isExpanded,
-    setIsExpanded
+    setIsExpanded,
+    clientAutoDownload
   } = usePlayerStore();
 
-  const { token, activeUrl } = useAuthStore();
-  const API_BASE_URL = activeUrl || import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? '' : 'http://localhost:3000');
+  const { token, activeUrl, serverUrl } = useAuthStore();
+  const API_BASE_URL = activeUrl || serverUrl || import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? '' : 'http://localhost:3000');
   
   const [cachedUri, setCachedUri] = useState<{id: string, path: string} | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const downloadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const downloadingFileRef = useRef<string | null>(null);
 
-  // Combined Effect: Handle Chapter Change, Cache Check, and Media Init (Native Only)
-  useEffect(() => {
-    if (!currentChapter) return;
-    if ((window as any).electronAPI) return;
-
-    // 1. Cleanup old timers
-    if (downloadTimeoutRef.current) {
-        clearTimeout(downloadTimeoutRef.current);
-        downloadTimeoutRef.current = null;
-    }
-
-    let isMounted = true;
-    const chapterId = currentChapter.id;
-    
-    const loadAndPlay = async () => {
-        // Determine URL - Default to network
-        let url = `${API_BASE_URL}/api/stream/${chapterId}?token=${token}`;
-        
-        try {
-            const fileName = `${chapterId}.mp3`;
-            const cachedPath = await getCachedFile(fileName);
-            
-            if (!isMounted) return;
-            if (currentChapter.id !== chapterId) return; // Stale
-
-            if (cachedPath) {
-                console.log('Using cached file:', cachedPath);
-                url = cachedPath;
-                // Update state for UI debugging (optional, but good for consistency)
-                setCachedUri({ id: chapterId, path: cachedPath });
-            } else {
-                console.log('File not in cache, streaming from server...');
-                // Reset cache state
-                setCachedUri(null);
-                
-                // Schedule background download (Debounced)
-                downloadTimeoutRef.current = setTimeout(() => {
-                    downloadInBackground(chapterId);
-                }, 5000);
-            }
-        } catch (e) {
-            console.warn('Cache check failed', e);
-        }
-
-        // Init Media with final URL
-        initMedia(url);
-    };
-
-    loadAndPlay();
-
-    return () => {
-        isMounted = false;
-        if (downloadTimeoutRef.current) {
-            clearTimeout(downloadTimeoutRef.current);
-        }
-        if (mediaRef.current) {
-            // Nullify ref before releasing to prevent stale callbacks from triggering logic
-            const media = mediaRef.current;
-            mediaRef.current = null;
-            media.release();
-        }
-        if (mediaTimerRef.current) {
-            clearInterval(mediaTimerRef.current);
-        }
-    };
-  }, [currentChapter?.id]);
-
-  const downloadInBackground = async (chapterId: string) => {
+  const downloadInBackground = useCallback(async (chapterId: string) => {
        const fileName = `${chapterId}.mp3`;
        
        try {
@@ -156,10 +220,21 @@ const Player: React.FC = () => {
                downloadingFileRef.current = null;
            }
        }
-  };
+  }, [API_BASE_URL, currentChapter?.id, token]);
+
+  const handleEnded = useCallback(() => {
+    if (currentBook && currentChapter && token) {
+      apiClient.post('/api/progress', {
+        bookId: currentBook.id,
+        chapterId: currentChapter.id,
+        position: Math.floor(duration)
+      }).catch(err => console.error('Failed to sync final progress', err));
+    }
+    nextChapter();
+  }, [currentBook, currentChapter, token, duration, nextChapter]);
 
   const getStreamUrl = (chapterId: string) => {
-    if ((window as any).electronAPI) {
+    if (typeof (window as WindowWithMedia).electronAPI !== 'undefined') {
       const remote = encodeURIComponent(API_BASE_URL);
       return `ting://stream/${chapterId}?token=${token}&remote=${remote}`;
     }
@@ -190,14 +265,15 @@ const Player: React.FC = () => {
       console.log('Initializing Native Media:', url);
       
       // Check if Media is available (Cordova plugin)
-      if (typeof (window as any).Media === 'undefined') {
+      const mediaCtor = (window as WindowWithMedia).Media;
+      if (!mediaCtor) {
           console.error('Cordova Media plugin not found!');
           return;
       }
       
       // Special handling for file:// URLs to avoid -38 errors
       // Sometimes file:// needs to be encoded or decoded differently depending on Android version
-      let finalUrl = url;
+      const finalUrl = url;
       if (finalUrl.startsWith('file://')) {
           // Ensure spaces are encoded if any
           // finalUrl = encodeURI(finalUrl); 
@@ -208,7 +284,7 @@ const Player: React.FC = () => {
 
       // Create new Media
       // new Media(src, mediaSuccess, mediaError, mediaStatus)
-      const media = new (window as any).Media(
+      const media = new mediaCtor(
           finalUrl,
           () => {
               console.log('Media Success (End of playback)');
@@ -220,7 +296,7 @@ const Player: React.FC = () => {
               }
               handleEnded();
           },
-          (err: any) => {
+          (err) => {
               console.error('Media Error', err);
               
               // Prevent stale callbacks
@@ -245,17 +321,16 @@ const Player: React.FC = () => {
                   // IMPORTANT: Force state update to null to trigger re-render (UI only)
                   setCachedUri(null); 
                   
-                  // Manually trigger fallback to network since we removed the effect dependency
                   if (currentChapter) {
                       const networkUrl = `${API_BASE_URL}/api/stream/${currentChapter.id}?token=${token}`;
-                      console.log('Triggering fallback to network url:', networkUrl);
+                      console.log('Switching to network stream after cached file failure:', networkUrl);
                       initMedia(networkUrl);
                   }
               } else {
                   // Only show error if not -38 (since we handle it by fallback)
                   // and not a known benign error
-                  if (err.code !== 0) { // 0 is sometimes used for generic or non-critical
-                      setError(`播放出错: ${err.message || err.code || JSON.stringify(err)}`);
+                  if (err?.code !== 0) { // 0 is sometimes used for generic or non-critical
+                      setError(`播放出错: ${err?.message || err?.code || JSON.stringify(err)}`);
                   }
               }
           },
@@ -363,7 +438,7 @@ const Player: React.FC = () => {
                           });
                       }
                   },
-                  (e: any) => {
+                  () => {
                       // Suppress generic errors during polling
                   }
               );
@@ -371,17 +446,91 @@ const Player: React.FC = () => {
       }, 1000);
   };
 
+  useEffect(() => {
+    if (!currentChapter) return;
+    if (typeof (window as WindowWithMedia).electronAPI !== 'undefined') return;
+
+    if (downloadTimeoutRef.current) {
+        clearTimeout(downloadTimeoutRef.current);
+        downloadTimeoutRef.current = null;
+    }
+
+    let isMounted = true;
+    const chapterId = currentChapter.id;
+    
+    const loadAndPlay = async () => {
+        if (!API_BASE_URL || !/^https?:\/\//i.test(API_BASE_URL)) {
+            setError('服务器地址无效，请重新登录后重试');
+            return;
+        }
+
+        let url = `${API_BASE_URL}/api/stream/${chapterId}?token=${token}`;
+        
+        try {
+            const fileName = `${chapterId}.mp3`;
+            const cachedPath = await getCachedFile(fileName);
+            
+            if (!isMounted) return;
+            if (currentChapter.id !== chapterId) return;
+
+            if (cachedPath) {
+                console.log('Using cached file:', cachedPath);
+                url = cachedPath;
+                setCachedUri({ id: chapterId, path: cachedPath });
+            } else {
+                console.log('File not in cache, streaming from server...');
+                setCachedUri(null);
+                
+                // Use fresh state for auto-download check
+                const autoDownload = usePlayerStore.getState().clientAutoDownload;
+                if (autoDownload) {
+                    downloadTimeoutRef.current = setTimeout(() => {
+                        downloadInBackground(chapterId);
+                    }, 5000);
+                }
+            }
+        } catch (e) {
+            console.warn('Cache check failed', e);
+        }
+
+        if (typeof (window as WindowWithMedia).electronAPI !== 'undefined') {
+            // Electron mode - handled by audio element
+        } else {
+            // Native mode
+            initMedia(url);
+        }
+    };
+
+    loadAndPlay();
+
+    return () => {
+        isMounted = false;
+        if (downloadTimeoutRef.current) {
+            clearTimeout(downloadTimeoutRef.current);
+        }
+        if (mediaRef.current) {
+            const media = mediaRef.current;
+            mediaRef.current = null;
+            media.release();
+        }
+        if (mediaTimerRef.current) {
+            clearInterval(mediaTimerRef.current);
+        }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentChapter?.id]);
+
   const audioRef = useRef<HTMLAudioElement>(null); // Keep for Electron fallback? No, let's remove usage for App.
 
   const location = useLocation();
-  const [isMuted, setIsMuted] = useState(false);
   // const [isExpanded, setIsExpanded] = useState(false); // Moved to store
   const [showChapters, setShowChapters] = useState(false);
   const [showSleepTimer, setShowSleepTimer] = useState(false);
   
   // Ref for Native Media
-  const mediaRef = useRef<any>(null); // Use any for Cordova Media
+  const mediaRef = useRef<MediaInstance | null>(null);
   const mediaTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastRemoteSeekTimeRef = useRef<number>(0);
 
   const [showSettings, setShowSettings] = useState(false);
   const [currentGroupIndex, setCurrentGroupIndex] = useState(0);
@@ -396,7 +545,7 @@ const Player: React.FC = () => {
       });
     }
   };
-  const [chapters, setChapters] = useState<any[]>([]);
+  const [chapters, setChapters] = useState<Chapter[]>([]);
   const [customMinutes, setCustomMinutes] = useState('');
   const [editSkipIntro, setEditSkipIntro] = useState(0);
   const [editSkipOutro, setEditSkipOutro] = useState(0);
@@ -406,14 +555,14 @@ const Player: React.FC = () => {
     if (currentBook?.theme_color) {
       setThemeColor(currentBook.theme_color);
     }
-  }, [currentBook?.id, currentBook?.theme_color]);
+  }, [currentBook?.id, currentBook?.theme_color, setThemeColor]);
 
   useEffect(() => {
     if (currentBook) {
       setEditSkipIntro(currentBook.skip_intro || 0);
       setEditSkipOutro(currentBook.skip_outro || 0);
     }
-  }, [currentBook?.id]);
+  }, [currentBook]);
 
   const handleSaveSettings = async () => {
     if (!currentBook) return;
@@ -452,31 +601,68 @@ const Player: React.FC = () => {
 
   const [sleepTimer, setSleepTimer] = useState<number | null>(null);
   const progressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const sleepTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const timerMenuRef = useRef<HTMLDivElement>(null);
 
-  const [error, setError] = useState<string | null>(null);
   const [bufferedTime, setBufferedTime] = useState(0);
   const [autoPreload, setAutoPreload] = useState(false);
+  const [autoCache, setAutoCache] = useState(false);
+  // const [clientAutoDownload, setClientAutoDownload] = useState(false); // Moved to store
   const isInitialLoadRef = useRef(true);
-  const preloadAudioRef = useRef<HTMLAudioElement | null>(null);
+  
+  const [cachedChapters, setCachedChapters] = useState<Set<string>>(new Set());
+  const { addTask, tasks: downloadTasks } = useDownloadStore();
 
   // Fetch settings for auto_preload
   useEffect(() => {
+    if (!token) return;
     apiClient.get('/api/settings').then(res => {
       setAutoPreload(!!res.data.auto_preload);
+      setAutoCache(!!res.data.auto_cache);
+      // setClientAutoDownload(!!res.data.client_auto_download); // Handled by store now
+      usePlayerStore.getState().setClientAutoDownload(!!res.data.client_auto_download);
     }).catch(err => console.error('Failed to fetch settings', err));
-  }, []);
+  }, [token]);
 
   // Fetch chapters for the current book
   useEffect(() => {
-    if (currentBook?.id) {
+    if (currentBook?.id && token) {
       apiClient.get(`/api/books/${currentBook.id}/chapters`).then(res => {
         setChapters(res.data);
         setCurrentGroupIndex(0); // Reset group index when book changes
       }).catch(err => console.error('Failed to fetch chapters', err));
     }
-  }, [currentBook?.id]);
+  }, [currentBook?.id, token]);
+  
+  // Check cache status
+  useEffect(() => {
+    const checkCache = async () => {
+      if (chapters.length === 0) return;
+      
+      const newCached = new Set<string>();
+      try {
+        await Promise.all(chapters.map(async (c) => {
+             const path = await getCachedFile(`${c.id}.mp3`);
+             if (path) newCached.add(c.id);
+        }));
+      } catch (e) {
+        console.error('Failed to check cache (Mobile)', e);
+      }
+      setCachedChapters(newCached);
+    };
+
+    checkCache();
+    // Re-check when tasks change
+    const completedTasks = downloadTasks.filter(t => t.status === 'completed' && t.bookId === currentBook?.id);
+    if (completedTasks.length > 0) {
+        completedTasks.forEach(t => {
+            setCachedChapters(prev => {
+                const next = new Set(prev);
+                next.add(t.chapterId);
+                return next;
+            });
+        });
+    }
+  }, [chapters, downloadTasks, currentBook?.id]);
 
   // Close timer menu when clicking outside
   useEffect(() => {
@@ -489,6 +675,23 @@ const Player: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Auto-scroll to current chapter in list
+  useEffect(() => {
+    if (showChapters && currentChapter && chapters.length > 0) {
+       const index = chapters.findIndex(c => c.id === currentChapter.id);
+       if (index !== -1) {
+           const groupIndex = Math.floor(index / chaptersPerGroup);
+           if (currentGroupIndex !== groupIndex) {
+               setCurrentGroupIndex(groupIndex);
+           }
+           setTimeout(() => {
+               const el = document.getElementById(`player-chapter-${currentChapter.id}`);
+               if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+           }, 100);
+       }
+    }
+  }, [chapters, currentChapter, currentGroupIndex, setCurrentGroupIndex, showChapters]);
+
   // Reset initial load ref when chapter changes
   useEffect(() => {
     isInitialLoadRef.current = true;
@@ -499,7 +702,7 @@ const Player: React.FC = () => {
 
   // Handle Play/Pause Toggle
   useEffect(() => {
-    if ((window as any).electronAPI) return;
+    if (typeof (window as WindowWithMedia).electronAPI !== 'undefined') return;
     
     if (mediaRef.current) {
         try {
@@ -523,13 +726,23 @@ const Player: React.FC = () => {
         }
     }
   }, [isPlaying]);
+
+  useEffect(() => {
+    if (typeof (window as WindowWithMedia).electronAPI === 'undefined') return;
+    if (!audioRef.current) return;
+    if (isPlaying) {
+        audioRef.current.play().catch(() => {});
+    } else {
+        audioRef.current.pause();
+    }
+  }, [isPlaying]);
   
   // Handle Volume
   useEffect(() => {
-    if (mediaRef.current) {
-        mediaRef.current.setVolume(isMuted ? 0 : volume);
+    if (mediaRef.current?.setVolume) {
+        mediaRef.current.setVolume(volume);
     }
-  }, [volume, isMuted]);
+  }, [volume]);
   
   // Handle Speed - Cordova Media doesn't support setRate easily on all platforms?
   // Android supports setRate since API 23.
@@ -614,7 +827,7 @@ const Player: React.FC = () => {
         notificationIcon: ''
     }).catch(console.error);
 
-  }, [currentChapter?.id, currentBook?.id]); // Only recreate if book/chapter identity changes
+  }, [currentBook?.id, currentChapter?.id]); // Only recreate if book/chapter identity changes
 
   // Update Controls: Play/Pause State
   useEffect(() => {
@@ -655,21 +868,49 @@ const Player: React.FC = () => {
 
   // Preload next chapter logic (Auto-cache)
   useEffect(() => {
-    if (!autoPreload || !currentChapter || !currentBook) return;
+    if ((!autoPreload && !autoCache && !clientAutoDownload) || !currentChapter || !currentBook) return;
     
     // Find next chapter index
     apiClient.get(`/api/books/${currentBook.id}/chapters`).then(res => {
       const chapters = res.data;
-      const currentIndex = chapters.findIndex((c: any) => c.id === currentChapter.id);
+      const currentIndex = chapters.findIndex(c => c.id === currentChapter.id);
       if (currentIndex !== -1 && currentIndex < chapters.length - 1) {
-        const nextChapterId = chapters[currentIndex + 1].id;
+        const nextChapter = chapters[currentIndex + 1];
         
-        // Use downloadInBackground to cache the file for offline use
-        console.log('Auto-caching next chapter:', chapters[currentIndex + 1].title);
-        downloadInBackground(nextChapterId);
+        // 1. Auto Preload (Memory - Audio Object)
+        if (autoPreload && !Capacitor.isNativePlatform()) {
+             // ... existing preload logic
+        }
+
+        // 2. Server-side Auto Cache (WebDAV)
+        if (autoCache) {
+           console.log('Triggering server-side cache for:', nextChapter.title);
+           apiClient.post(`/api/cache/${nextChapter.id}`).catch(err => {
+              console.error('Failed to trigger server cache', err);
+           });
+        }
+
+        // 3. Client-side Auto Download (Offline)
+        if (clientAutoDownload) {
+           const { tasks, addTask } = useDownloadStore.getState();
+           const existingTask = tasks.find(t => t.id === nextChapter.id);
+           
+           if (!existingTask) {
+              console.log('Client auto-downloading next chapter:', nextChapter.title);
+              addTask({
+                  id: nextChapter.id,
+                  bookId: currentBook.id,
+                  bookTitle: currentBook.title,
+                  themeColor: currentBook.theme_color,
+                  chapterId: nextChapter.id,
+                  title: nextChapter.title,
+                  coverUrl: currentBook.cover_url
+              });
+           }
+        }
       }
     }).catch(err => console.error('Preload failed', err));
-  }, [currentChapter?.id, autoPreload, currentBook?.id]);
+  }, [autoPreload, autoCache, clientAutoDownload, currentBook, currentChapter]);
 
   // Handle Skip Intro and Outro
   // Replaced handleTimeUpdate with polling in initMedia
@@ -698,7 +939,7 @@ const Player: React.FC = () => {
             }
         }
      }
-  }, [currentTime, isPlaying]);
+  }, [currentTime, isPlaying, currentBook, duration, nextChapter, setCurrentTime]);
 
   // Handle Skip Intro and Outro
   const handleTimeUpdate = () => {
@@ -767,7 +1008,7 @@ const Player: React.FC = () => {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [sleepTimer === null, isPlaying]);
+  }, [sleepTimer, isPlaying]);
 
   // Handle Sleep Timer Expiration
   useEffect(() => {
@@ -777,7 +1018,7 @@ const Player: React.FC = () => {
       }
       setSleepTimer(null);
     }
-  }, [sleepTimer, isPlaying]);
+  }, [sleepTimer, isPlaying, togglePlay]);
 
   useEffect(() => {
     if (!audioRef.current) return;
@@ -786,8 +1027,8 @@ const Player: React.FC = () => {
 
   useEffect(() => {
     if (!audioRef.current) return;
-    audioRef.current.volume = isMuted ? 0 : volume;
-  }, [volume, isMuted]);
+    audioRef.current.volume = volume;
+  }, [volume]);
 
   const currentTimeRef = useRef(0);
   useEffect(() => {
@@ -799,6 +1040,7 @@ const Player: React.FC = () => {
     if (isPlaying && currentBook && currentChapter) {
       // Save progress immediately when starting
       const saveProgress = () => {
+        if (!token) return;
         apiClient.post('/api/progress', {
           bookId: currentBook.id,
           chapterId: currentChapter.id,
@@ -815,7 +1057,7 @@ const Player: React.FC = () => {
     return () => {
       if (progressTimerRef.current) clearInterval(progressTimerRef.current);
     };
-  }, [isPlaying, currentBook?.id, currentChapter?.id]);
+  }, [isPlaying, currentBook, currentChapter, token]);
 
   const handleLoadedMetadata = () => {
     if (audioRef.current) {
@@ -823,7 +1065,7 @@ const Player: React.FC = () => {
       setDuration(browserDuration);
 
       // Sync duration back to server if it's significantly different
-      if (currentChapter && browserDuration > 0) {
+      if (currentChapter && browserDuration > 0 && token) {
         const diff = Math.abs(browserDuration - (currentChapter.duration || 0));
         if (diff > 2) {
           console.log(`Syncing accurate duration for ${currentChapter.title}: ${browserDuration}s`);
@@ -834,11 +1076,33 @@ const Player: React.FC = () => {
     }
   };
 
+  const [isSeeking, setIsSeeking] = useState(false);
+  const [seekTime, setSeekTime] = useState(0);
+
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
+    setSeekTime(time);
+    if (!isSeeking) {
+      // Seek Native Media
+      if (mediaRef.current) {
+        mediaRef.current.seekTo(time * 1000); // ms
+      }
+      // Also update React state for UI
+      setCurrentTime(time);
+    }
+  };
+
+  const handleSeekStart = () => {
+    setIsSeeking(true);
+    setSeekTime(currentTime);
+  };
+
+  const handleSeekEnd = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const time = parseFloat(e.target.value);
+    setIsSeeking(false);
     // Seek Native Media
     if (mediaRef.current) {
-        mediaRef.current.seekTo(time * 1000); // ms
+      mediaRef.current.seekTo(time * 1000); // ms
     }
     // Also update React state for UI
     setCurrentTime(time);
@@ -856,7 +1120,7 @@ const Player: React.FC = () => {
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
-  const getChapterProgressText = (chapter: any) => {
+  const getChapterProgressText = (chapter: Chapter) => {
     if (!chapter.progress_position || !chapter.duration) return null;
     
     const percent = Math.floor((chapter.progress_position / chapter.duration) * 100);
@@ -874,7 +1138,7 @@ const Player: React.FC = () => {
     if (isHiddenPage && isExpanded) {
       setIsExpanded(false);
     }
-  }, [location.pathname, isExpanded, isHiddenPage]);
+  }, [location.pathname, isExpanded, isHiddenPage, setIsExpanded]);
 
   // Fullscreen Logic for Widget
   const toggleFullscreen = async () => {
@@ -928,7 +1192,7 @@ const Player: React.FC = () => {
 
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, [isWidgetMode]);
+  }, [isWidgetMode, setIsExpanded]);
 
   if (!currentChapter) return null;
 
@@ -938,53 +1202,8 @@ const Player: React.FC = () => {
     left: isWidgetMode ? '0' : undefined,
     right: isWidgetMode ? '0' : undefined,
   } : {};
-
-  const ProgressBar = ({ isMini = false }) => {
-    const playedPercent = (currentTime / (duration || 1)) * 100;
-    const bufferedPercent = (bufferedTime / (duration || 1)) * 100;
-    
-    // Safety check for themeColor
-    const safeThemeColor = themeColor || 'rgba(0,0,0,0.15)';
-    
-    return (
-      <div className={`relative group/progress ${isMini ? 'flex-1 h-2 sm:h-1.5' : 'w-full h-2.5'} bg-slate-300 dark:bg-slate-900 rounded-full overflow-hidden`}>
-        {/* Buffered Bar */}
-        <div 
-          className="absolute inset-y-0 left-0 bg-slate-400/30 dark:bg-slate-700/40 transition-all duration-300" 
-          style={{ width: `${bufferedPercent}%` }}
-        />
-        {/* Played Bar */}
-        <div 
-          className="absolute inset-y-0 left-0 z-10" 
-          style={{ 
-            width: `${playedPercent}%`,
-            backgroundColor: safeThemeColor.replace('0.15', '1.0').replace('0.1', '1.0'),
-            boxShadow: `0 0 10px ${safeThemeColor.replace('0.15', '0.4').replace('0.1', '0.4')}`
-          }}
-        />
-        {/* Range Input for Seeking */}
-        <input 
-          type="range" 
-          min="0" 
-          max={duration || 0} 
-          value={currentTime} 
-          onChange={handleSeek}
-          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
-        />
-      </div>
-    );
-  };
-
-  const handleEnded = () => {
-    if (currentBook && currentChapter) {
-      apiClient.post('/api/progress', {
-        bookId: currentBook.id,
-        chapterId: currentChapter.id,
-        position: Math.floor(duration)
-      }).catch(err => console.error('Failed to sync final progress', err));
-    }
-    nextChapter();
-  };
+  // const audioSrc = webAudioUrl || getStreamUrl(currentChapter.id);
+  // const shouldUseWebAudio = !useNativeMedia;
 
   return (
     <div 
@@ -998,8 +1217,7 @@ const Player: React.FC = () => {
       `}
       style={miniPlayerStyle}
     >
-      {/* Audio Element - Only for Web/Electron */}
-      {!Capacitor.isNativePlatform() && (
+      {typeof (window as WindowWithMedia).electronAPI !== 'undefined' && (
         <audio
           ref={audioRef}
           src={getStreamUrl(currentChapter.id)}
@@ -1048,7 +1266,7 @@ const Player: React.FC = () => {
             className={`
               h-full ${isWidgetMode ? 'max-w-none rounded-none border-none shadow-none' : 'max-w-7xl mx-auto rounded-2xl sm:rounded-3xl shadow-2xl shadow-black/10 border border-slate-200/50 dark:border-slate-800/50'}
               bg-white/95 dark:bg-slate-900/95 backdrop-blur-md 
-              flex items-center justify-between ${isWidgetMode ? 'px-3 max-[380px]:flex-col max-[380px]:justify-center max-[380px]:gap-1.5 max-[380px]:py-2' : 'px-3 sm:px-6'} pointer-events-auto
+              flex items-center justify-between ${isWidgetMode ? 'px-3 max-[380px]:flex-col max-[380px]:justify-center max-[380px]:gap-1.5 max-[380px]:py-2' : 'px-3 sm:px-6 gap-3'} pointer-events-auto
               transition-all duration-300
             `}
             style={{ 
@@ -1057,7 +1275,7 @@ const Player: React.FC = () => {
             }}
           >
             {/* Info */}
-            <div className={`flex items-center gap-2 sm:gap-3 min-w-0 ${isWidgetMode ? 'max-[380px]:w-full max-[380px]:max-w-none' : ''} max-w-[100px] max-[380px]:max-w-[140px] sm:max-w-[200px] md:max-w-[240px] lg:max-w-[320px] md:flex-none flex-1`}>
+            <div className={`flex items-center gap-2 sm:gap-3 min-w-0 ${isWidgetMode ? 'max-[380px]:w-full max-[380px]:max-w-none' : ''} max-w-[100px] max-[380px]:max-w-[140px] sm:max-w-[200px] md:max-w-[240px] lg:max-w-[320px] flex-none`}>
               <div 
                 className="w-12 h-12 max-[380px]:w-10 max-[380px]:h-10 sm:w-16 sm:h-16 rounded-lg sm:rounded-xl overflow-hidden shadow-md cursor-pointer shrink-0"
                 onClick={toggleFullscreen}
@@ -1072,7 +1290,7 @@ const Player: React.FC = () => {
                   }}
                 />
               </div>
-              <div className="min-w-0 flex-1">
+              <div className="min-w-0 flex-1 hidden md:block">
                 <h4 className="font-bold dark:text-white truncate text-sm max-[380px]:text-xs">{currentBook?.title}</h4>
                 <p className="text-slate-500 truncate text-xs max-[380px]:text-[10px]">{currentChapter.title}</p>
               </div>
@@ -1081,7 +1299,18 @@ const Player: React.FC = () => {
             {/* Widget Vertical Layout: Progress Bar (Visible only on small widget) */}
             {isWidgetMode && (
               <div className="hidden max-[380px]:block w-full px-1 py-1">
-                 <ProgressBar isMini={true} />
+                 <ProgressBar 
+                   isMini={true} 
+                   isSeeking={isSeeking}
+                   seekTime={seekTime}
+                   currentTime={currentTime}
+                   duration={duration}
+                   bufferedTime={bufferedTime}
+                   themeColor={themeColor}
+                   onSeek={handleSeek}
+                   onSeekStart={handleSeekStart}
+                   onSeekEnd={handleSeekEnd}
+                 />
               </div>
             )}
 
@@ -1144,7 +1373,18 @@ const Player: React.FC = () => {
 
               <div className="w-full flex items-center gap-3">
                 <span className="text-[10px] text-slate-400 w-8 text-right">{formatTime(currentTime)}</span>
-                <ProgressBar isMini={true} />
+                <ProgressBar 
+                  isMini={true} 
+                  isSeeking={isSeeking}
+                  seekTime={seekTime}
+                  currentTime={currentTime}
+                  duration={duration}
+                  bufferedTime={bufferedTime}
+                  themeColor={themeColor}
+                  onSeek={handleSeek}
+                  onSeekStart={handleSeekStart}
+                  onSeekEnd={handleSeekEnd}
+                />
                 <span className="text-[10px] text-slate-400 w-8">{formatTime(duration)}</span>
               </div>
             </div>
@@ -1152,7 +1392,18 @@ const Player: React.FC = () => {
             {/* Mobile Controls - Only visible on small screens */}
             <div className={`flex md:hidden items-center gap-2 sm:gap-3 flex-1 min-w-0 justify-end ${isWidgetMode ? 'max-[380px]:w-full max-[380px]:justify-center max-[380px]:gap-6 max-[380px]:flex-none' : ''}`}>
               <div className="flex-1 min-w-0 h-2 block">
-                <ProgressBar isMini={true} />
+                <ProgressBar 
+                  isMini={true} 
+                  isSeeking={isSeeking}
+                  seekTime={seekTime}
+                  currentTime={currentTime}
+                  duration={duration}
+                  bufferedTime={bufferedTime}
+                  themeColor={themeColor}
+                  onSeek={handleSeek}
+                  onSeekStart={handleSeekStart}
+                  onSeekEnd={handleSeekEnd}
+                />
               </div>
               <div className="flex items-center gap-1 shrink-0">
                 {isWidgetMode && (
@@ -1298,39 +1549,27 @@ const Player: React.FC = () => {
 
             <div className="w-full space-y-8 sm:space-y-12">
               {/* Progress Bar Section */}
-              <div className="relative group/progress px-2 sm:px-4">
-                <div className="flex items-center gap-2 sm:gap-4">
-                  <button onClick={prevChapter} className="text-[#4A3728] dark:text-slate-400 opacity-60 hover:opacity-100 transition-opacity">
-                    <SkipBack size={20} className="sm:w-6 sm:h-6" fill="currentColor" />
-                  </button>
-                  <div className="flex-1 relative h-10 sm:h-12 flex items-center">
-                    <div className="absolute inset-x-0 h-1.5 sm:h-2.5 bg-slate-300/40 dark:bg-slate-800 rounded-full overflow-hidden">
-                      <div 
-                        className="absolute inset-y-0 left-0 bg-[#4A3728] dark:bg-primary-600 shadow-[0_0_8px_rgba(74,55,40,0.3)]" 
-                        style={{ width: `${(currentTime / (duration || 1)) * 100}%` }}
-                      />
-                    </div>
-                    <div 
-                      className="absolute bg-[#2D1B10]/90 dark:bg-primary-600/90 backdrop-blur-sm text-white px-2.5 sm:px-4 py-1 rounded-full text-[10px] sm:text-xs font-medium z-10 whitespace-nowrap shadow-lg transition-all duration-150 ease-out"
-                      style={{ 
-                        left: `${(currentTime / (duration || 1)) * 100}%`,
-                        transform: 'translateX(-50%)'
-                      }}
-                    >
-                      {formatTime(currentTime)} / {formatTime(duration)}
-                    </div>
-                    <input 
-                      type="range" 
-                      min="0" 
-                      max={duration || 0} 
-                      value={currentTime} 
-                      onChange={handleSeek}
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
+              <div className="px-2 sm:px-4">
+                <div className="flex items-center gap-3 sm:gap-6">
+                  <span className="text-[10px] sm:text-xs font-medium text-slate-500 dark:text-slate-400 min-w-[40px] text-right">
+                    {formatTime(currentTime)}
+                  </span>
+                  <div className="flex-1">
+                    <ProgressBar 
+                      isSeeking={isSeeking}
+                      seekTime={seekTime}
+                      currentTime={currentTime}
+                      duration={duration}
+                      bufferedTime={bufferedTime}
+                      themeColor={themeColor}
+                      onSeek={handleSeek}
+                      onSeekStart={handleSeekStart}
+                      onSeekEnd={handleSeekEnd}
                     />
                   </div>
-                  <button onClick={nextChapter} className="text-[#4A3728] dark:text-slate-400 opacity-30 hover:opacity-60 transition-opacity">
-                    <SkipForward size={20} className="sm:w-6 sm:h-6" fill="currentColor" />
-                  </button>
+                  <span className="text-[10px] sm:text-xs font-medium text-slate-500 dark:text-slate-400 min-w-[40px]">
+                    {formatTime(duration)}
+                  </span>
                 </div>
               </div>
 
@@ -1621,15 +1860,15 @@ const Player: React.FC = () => {
                   {(groups[currentGroupIndex]?.chapters || chapters).map((chapter, index) => {
                     const actualIndex = currentGroupIndex * chaptersPerGroup + index;
                     const isCurrent = currentChapter?.id === chapter.id;
+                    const isCached = cachedChapters.has(chapter.id);
+                    const downloadTask = downloadTasks.find(t => t.id === chapter.id);
+                    const isDownloading = downloadTask?.status === 'pending' || downloadTask?.status === 'downloading';
                     
                     return (
                       <div 
                         key={chapter.id}
-                        onClick={() => {
-                          playChapter(currentBook!, chapters, chapter);
-                          setShowChapters(false);
-                        }}
-                        className={`group flex items-center justify-between p-4 rounded-2xl cursor-pointer transition-all border ${
+                        id={`player-chapter-${chapter.id}`}
+                        className={`group flex items-center justify-between p-4 rounded-2xl transition-all border ${
                           isCurrent 
                             ? 'bg-opacity-10 border-opacity-20' 
                             : 'bg-white dark:bg-slate-900 border-slate-100 dark:border-slate-800 hover:border-primary-200 dark:hover:border-primary-800'
@@ -1639,7 +1878,13 @@ const Player: React.FC = () => {
                           borderColor: themeColor.replace('0.15', '0.3').replace('0.1', '0.3'),
                         } : {}}
                       >
-                        <div className="flex items-center gap-4 min-w-0">
+                        <div 
+                          className="flex items-center gap-4 min-w-0 flex-1 cursor-pointer"
+                          onClick={() => {
+                            playChapter(currentBook!, chapters, chapter);
+                            setShowChapters(false);
+                          }}
+                        >
                           <div 
                             className={`w-10 h-10 sm:w-12 sm:h-12 rounded-xl flex items-center justify-center font-bold text-base sm:text-lg shrink-0 ${
                               isCurrent ? 'text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
@@ -1671,16 +1916,51 @@ const Player: React.FC = () => {
                                   {getChapterProgressText(chapter)}
                                 </div>
                               )}
+                              {isCached && (
+                                <div className="flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                                   <Check size={10} />
+                                   已缓存
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>
-                        {isCurrent && isPlaying && (
-                          <div className="flex gap-1 items-end h-5">
-                            <div className="w-1 animate-music-bar-1 rounded-full" style={{ backgroundColor: themeColor.replace('0.15', '1.0').replace('0.1', '1.0') }}></div>
-                            <div className="w-1 animate-music-bar-2 rounded-full" style={{ backgroundColor: themeColor.replace('0.15', '1.0').replace('0.1', '1.0') }}></div>
-                            <div className="w-1 animate-music-bar-3 rounded-full" style={{ backgroundColor: themeColor.replace('0.15', '1.0').replace('0.1', '1.0') }}></div>
-                          </div>
-                        )}
+                        
+                        <div className="flex items-center gap-4 pl-4 border-l border-slate-100 dark:border-slate-800 ml-4">
+                          {!isCached && !isDownloading && (
+                            <button 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                addTask({
+                                  id: chapter.id,
+                                  bookId: currentBook!.id,
+                                  bookTitle: currentBook!.title,
+                                  themeColor: currentBook!.theme_color,
+                                  chapterId: chapter.id,
+                                  title: chapter.title,
+                                  coverUrl: currentBook!.cover_url
+                                });
+                              }}
+                              className="p-2 text-slate-400 hover:text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/20 rounded-full transition-all"
+                              title="下载缓存"
+                            >
+                              <Download size={18} />
+                            </button>
+                          )}
+                          {isDownloading && (
+                             <div className="p-2">
+                                <Loader2 size={18} className="text-primary-500 animate-spin" />
+                             </div>
+                          )}
+
+                          {isCurrent && isPlaying && (
+                            <div className="flex gap-1 items-end h-5">
+                              <div className="w-1 animate-music-bar-1 rounded-full" style={{ backgroundColor: themeColor.replace('0.15', '1.0').replace('0.1', '1.0') }}></div>
+                              <div className="w-1 animate-music-bar-2 rounded-full" style={{ backgroundColor: themeColor.replace('0.15', '1.0').replace('0.1', '1.0') }}></div>
+                              <div className="w-1 animate-music-bar-3 rounded-full" style={{ backgroundColor: themeColor.replace('0.15', '1.0').replace('0.1', '1.0') }}></div>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
