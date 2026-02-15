@@ -56,6 +56,12 @@ const BookDetailPage: React.FC = () => {
   const [isTagsOverflowing, setIsTagsOverflowing] = useState(false);
   const descriptionRef = useRef<HTMLParagraphElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const hasInitialScrolled = useRef(false);
+
+  // Reset scroll state when book ID changes
+  useEffect(() => {
+    hasInitialScrolled.current = false;
+  }, [id]);
   
   const [cachedChapters, setCachedChapters] = useState<Set<string>>(new Set());
   const { addTask, tasks: downloadTasks } = useDownloadStore();
@@ -128,21 +134,26 @@ const BookDetailPage: React.FC = () => {
 
   // Auto-scroll to current chapter logic
   useEffect(() => {
+    if (hasInitialScrolled.current) return;
+
     if (book && currentChapter && (currentChapter.book_id === book.id || currentChapter.bookId === book.id)) {
       // Determine if current chapter is in main or extra
       const inMain = mainChapters.find(c => c.id === currentChapter.id);
       const inExtra = extraChapters.find(c => c.id === currentChapter.id);
       
       let targetList = currentChapters;
+      let targetTab = activeTab;
       
       if (inMain) {
         if (activeTab !== 'main') {
           setActiveTab('main');
+          targetTab = 'main';
         }
         targetList = mainChapters;
       } else if (inExtra) {
         if (activeTab !== 'extra') {
           setActiveTab('extra');
+          targetTab = 'extra';
         }
         targetList = extraChapters;
       }
@@ -160,6 +171,7 @@ const BookDetailPage: React.FC = () => {
           const el = document.getElementById(`chapter-${currentChapter.id}`);
           if (el) {
             el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            hasInitialScrolled.current = true;
           }
         }, 100);
       }
