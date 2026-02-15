@@ -361,7 +361,9 @@ const Player: React.FC = () => {
                   if (media._resumeTime > 0 && !media._initialSeekDone) {
                       console.log(`Performing initial seek to ${media._resumeTime}s`);
                       media.seekTo(media._resumeTime * 1000);
-                      media._initialSeekDone = true;
+                      // Do NOT set _initialSeekDone = true here. 
+                      // Let the poller verify that the position has actually updated.
+                      // media._initialSeekDone = true;
                   }
 
                   // Ensure notification state is synced
