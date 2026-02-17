@@ -1,8 +1,8 @@
-import { Filesystem, type FileInfo } from '@capacitor/filesystem';
+import { Directory, Filesystem, type FileInfo } from '@capacitor/filesystem';
 import { CapacitorHttp } from '@capacitor/core';
 
 // Use 'EXTERNAL' to map to Directory.External (Publicly visible in Android/data, accessible by MediaPlayer)
-const DATA_DIR_STR = 'EXTERNAL';
+const DATA_DIR = Directory.External;
 
 // Cache configuration
 const MAX_CACHE_SIZE_BYTES = 2 * 1024 * 1024 * 1024; // 2GB limit
@@ -28,7 +28,7 @@ export async function getCachedFile(fileName: string): Promise<string | null> {
     try {
         const stat = await Filesystem.stat({
             path: `${CACHE_DIR}/${fileName}`,
-            directory: DATA_DIR_STR as any
+            directory: DATA_DIR
         });
         
         // Check if file size is valid (greater than 0)
@@ -39,9 +39,11 @@ export async function getCachedFile(fileName: string): Promise<string | null> {
             try {
                 await Filesystem.deleteFile({
                     path: `${CACHE_DIR}/${fileName}`,
-                    directory: DATA_DIR_STR as any
+                    directory: DATA_DIR
                 });
-            } catch {}
+            } catch {
+                void 0;
+            }
             return null;
         }
 
@@ -55,16 +57,17 @@ export async function removeCachedFile(fileName: string): Promise<boolean> {
     try {
         await Filesystem.deleteFile({
             path: `${CACHE_DIR}/${fileName}`,
-            directory: DATA_DIR_STR as any
+            directory: DATA_DIR
         });
         console.log(`[Cache] Successfully deleted ${fileName}`);
         return true;
-    } catch (e: any) {
+    } catch (err) {
         // If file doesn't exist, it's considered "deleted"
-        if (e.message && e.message.includes('not found')) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes('not found')) {
             return true;
         }
-        console.warn(`[Cache] Failed to delete ${fileName}:`, e);
+        console.warn(`[Cache] Failed to delete ${fileName}:`, err);
         return false;
     }
 }
@@ -77,12 +80,12 @@ export async function getCacheStats(): Promise<CacheStats> {
     try {
         await Filesystem.readdir({
             path: CACHE_DIR,
-            directory: DATA_DIR_STR as any
+            directory: DATA_DIR
         });
     } catch {
         await Filesystem.mkdir({
             path: CACHE_DIR,
-            directory: DATA_DIR_STR as any,
+            directory: DATA_DIR,
             recursive: true
         });
         return { size: 0, files: [] };
@@ -90,7 +93,7 @@ export async function getCacheStats(): Promise<CacheStats> {
 
     const result = await Filesystem.readdir({
       path: CACHE_DIR,
-      directory: DATA_DIR_STR as any
+      directory: DATA_DIR
     });
 
     const files = result.files;
@@ -104,7 +107,7 @@ export async function getCacheStats(): Promise<CacheStats> {
         try {
             const stat = await Filesystem.stat({
                 path: `${CACHE_DIR}/${file.name}`,
-                directory: DATA_DIR_STR as any
+                directory: DATA_DIR
             });
             
             validFiles.push({
@@ -159,7 +162,7 @@ export async function ensureCacheLimits() {
       for (const file of filesToDelete) {
         await Filesystem.deleteFile({
             path: `${CACHE_DIR}/${file.name}`,
-            directory: DATA_DIR_STR as any
+            directory: DATA_DIR
         });
       }
       
@@ -182,9 +185,9 @@ export async function downloadToCache(url: string, fileName: string): Promise<st
         
         // Ensure dir exists
         try {
-            await Filesystem.readdir({ path: CACHE_DIR, directory: DATA_DIR_STR as any });
+            await Filesystem.readdir({ path: CACHE_DIR, directory: DATA_DIR });
         } catch {
-            await Filesystem.mkdir({ path: CACHE_DIR, directory: DATA_DIR_STR as any, recursive: true });
+            await Filesystem.mkdir({ path: CACHE_DIR, directory: DATA_DIR, recursive: true });
         }
 
         // 1. Head request for size
@@ -201,9 +204,11 @@ export async function downloadToCache(url: string, fileName: string): Promise<st
         try {
             await Filesystem.deleteFile({
                 path: `${CACHE_DIR}/${tempFileName}`,
-                directory: DATA_DIR_STR as any
+                directory: DATA_DIR
             });
-        } catch {}
+        } catch {
+            void 0;
+        }
 
         if (totalSize > 0 && totalSize > 50 * 1024 * 1024) {
             // Only use chunking for very large files (> 50MB) to avoid OOM
@@ -230,14 +235,14 @@ export async function downloadToCache(url: string, fileName: string): Promise<st
                     await Filesystem.writeFile({
                         path: `${CACHE_DIR}/${tempFileName}`,
                         data: response.data,
-                        directory: DATA_DIR_STR as any,
+                        directory: DATA_DIR,
                         recursive: true
                     });
                 } else {
                     await Filesystem.appendFile({
                         path: `${CACHE_DIR}/${tempFileName}`,
                         data: response.data,
-                        directory: DATA_DIR_STR as any
+                        directory: DATA_DIR
                     });
                 }
                 
@@ -260,7 +265,7 @@ export async function downloadToCache(url: string, fileName: string): Promise<st
             await Filesystem.writeFile({
                 path: `${CACHE_DIR}/${tempFileName}`,
                 data: response.data,
-                directory: DATA_DIR_STR as any,
+                directory: DATA_DIR,
                 recursive: true
             });
         }
@@ -269,8 +274,8 @@ export async function downloadToCache(url: string, fileName: string): Promise<st
         await Filesystem.rename({
             from: `${CACHE_DIR}/${tempFileName}`,
             to: `${CACHE_DIR}/${fileName}`,
-            directory: DATA_DIR_STR as any,
-            toDirectory: DATA_DIR_STR as any
+            directory: DATA_DIR,
+            toDirectory: DATA_DIR
         });
 
         // Check limits
@@ -279,22 +284,25 @@ export async function downloadToCache(url: string, fileName: string): Promise<st
 
         const uri = await Filesystem.getUri({
             path: `${CACHE_DIR}/${fileName}`,
-            directory: DATA_DIR_STR as any
+            directory: DATA_DIR
         });
         return uri.uri;
 
-    } catch (e: any) {
-        console.error(`Failed to download ${fileName}:`, e.message);
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`Failed to download ${fileName}:`, message);
         // Cleanup temp
         try {
             await Filesystem.deleteFile({
                 path: `${CACHE_DIR}/${tempFileName}`,
-                directory: DATA_DIR_STR as any
+                directory: DATA_DIR
             });
-        } catch {}
+        } catch {
+            void 0;
+        }
         
         activeDownloads.delete(fileName);
-        throw e;
+        throw err;
     }
 }
 
@@ -305,11 +313,11 @@ export async function clearCache() {
   try {
     await Filesystem.rmdir({
         path: CACHE_DIR,
-        directory: DATA_DIR_STR as any,
+        directory: DATA_DIR,
         recursive: true
     });
     return true;
-  } catch (err) {
+  } catch {
     return false;
   }
 }
@@ -317,7 +325,7 @@ export async function clearCache() {
 export async function getCacheDir() {
     const uri = await Filesystem.getUri({
         path: CACHE_DIR,
-        directory: DATA_DIR_STR as any
+        directory: DATA_DIR
     });
     return uri.uri;
 }

@@ -18,6 +18,7 @@ export interface DownloadTask {
   chapterId: string;
   title: string;
   chapterNum?: number;
+  duration?: number;
   coverUrl?: string;
   status: 'pending' | 'downloading' | 'completed' | 'failed';
   progress: number;
@@ -40,9 +41,6 @@ interface DownloadState {
   retryTask: (taskId: string) => void;
   clearAllTasks: () => void;
   redownloadCover: (taskId: string) => Promise<void>;
-  isPaused: boolean;
-  pauseQueue: () => void;
-  resumeQueue: () => void;
   initializeQueue: () => void;
 }
 
@@ -51,7 +49,6 @@ export const useDownloadStore = create<DownloadState>()(
     (set, get) => ({
       tasks: [],
       activeTaskId: null,
-      isPaused: false,
 
       initializeQueue: () => {
         set(state => ({
@@ -60,15 +57,6 @@ export const useDownloadStore = create<DownloadState>()(
           ),
           activeTaskId: null
         }));
-        get().processQueue();
-      },
-
-      pauseQueue: () => {
-        set({ isPaused: true });
-      },
-
-      resumeQueue: () => {
-        set({ isPaused: false });
         get().processQueue();
       },
 
@@ -135,8 +123,8 @@ export const useDownloadStore = create<DownloadState>()(
       },
 
       processQueue: async () => {
-        const { tasks, activeTaskId, startDownload, isPaused } = get();
-        if (activeTaskId || isPaused) return;
+        const { tasks, activeTaskId, startDownload } = get();
+        if (activeTaskId) return;
 
         const nextTask = tasks.find(t => t.status === 'pending');
         if (nextTask) {

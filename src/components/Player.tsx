@@ -537,7 +537,6 @@ const Player: React.FC = () => {
   // Ref for Native Media
   const mediaRef = useRef<MediaInstance | null>(null);
   const mediaTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const lastRemoteSeekTimeRef = useRef<number>(0);
 
   const [showSettings, setShowSettings] = useState(false);
   const [currentGroupIndex, setCurrentGroupIndex] = useState(0);
@@ -556,6 +555,28 @@ const Player: React.FC = () => {
   const [customMinutes, setCustomMinutes] = useState('');
   const [editSkipIntro, setEditSkipIntro] = useState(0);
   const [editSkipOutro, setEditSkipOutro] = useState(0);
+  const isOfflineMode = !navigator.onLine || window.location.hash.includes('/offline');
+  const currentTimeRef = useRef(0);
+  const isPlayingRef = useRef(isPlaying);
+  const durationRef = useRef(duration);
+  const currentBookId = currentBook?.id;
+  const currentBookTitle = currentBook?.title || '';
+  const currentBookCoverUrl = currentBook?.cover_url;
+  const currentBookLibraryId = currentBook?.library_id;
+  const currentChapterId = currentChapter?.id;
+  const currentChapterTitle = currentChapter?.title || '';
+
+  useEffect(() => {
+    currentTimeRef.current = currentTime;
+  }, [currentTime]);
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+
+  useEffect(() => {
+    durationRef.current = duration;
+  }, [duration]);
 
   // Use stored theme color from book to avoid flash
   useEffect(() => {
@@ -565,20 +586,38 @@ const Player: React.FC = () => {
   }, [currentBook?.id, currentBook?.theme_color, setThemeColor]);
 
   useEffect(() => {
-    if (currentBook) {
-      setEditSkipIntro(currentBook.skip_intro || 0);
-      setEditSkipOutro(currentBook.skip_outro || 0);
+    if (!currentBook) return;
+    if (isOfflineMode) {
+      const raw = localStorage.getItem(`offline_skip_${currentBook.id}`);
+      const cached = raw ? JSON.parse(raw) : null;
+      const skipIntro = cached?.skip_intro ?? currentBook.skip_intro ?? 0;
+      const skipOutro = cached?.skip_outro ?? currentBook.skip_outro ?? 0;
+      setEditSkipIntro(skipIntro);
+      setEditSkipOutro(skipOutro);
+
+      // Only update store if values differ to prevent infinite loop
+      if (currentBook.skip_intro !== skipIntro || currentBook.skip_outro !== skipOutro) {
+        usePlayerStore.setState(state => ({
+          currentBook: state.currentBook ? {
+            ...state.currentBook,
+            skip_intro: skipIntro,
+            skip_outro: skipOutro
+          } : null
+        }));
+      }
+      return;
     }
-  }, [currentBook]);
+    const skipIntro = currentBook.skip_intro ?? 0;
+    const skipOutro = currentBook.skip_outro ?? 0;
+    setEditSkipIntro(skipIntro);
+    setEditSkipOutro(skipOutro);
+    localStorage.setItem(`offline_skip_${currentBook.id}`, JSON.stringify({ skip_intro: skipIntro, skip_outro: skipOutro }));
+  }, [currentBook, isOfflineMode]);
 
   const handleSaveSettings = async () => {
     if (!currentBook) return;
-    try {
-      await apiClient.patch(`/api/books/${currentBook.id}`, {
-        skip_intro: editSkipIntro,
-        skip_outro: editSkipOutro
-      });
-      // Update local store state if necessary, but currentBook is in store
+    if (isOfflineMode) {
+      localStorage.setItem(`offline_skip_${currentBook.id}`, JSON.stringify({ skip_intro: editSkipIntro, skip_outro: editSkipOutro }));
       usePlayerStore.setState(state => ({
         currentBook: state.currentBook ? {
           ...state.currentBook,
@@ -586,6 +625,22 @@ const Player: React.FC = () => {
           skip_outro: editSkipOutro
         } : null
       }));
+      setShowSettings(false);
+      return;
+    }
+    try {
+      await apiClient.patch(`/api/books/${currentBook.id}`, {
+        skip_intro: editSkipIntro,
+        skip_outro: editSkipOutro
+      });
+      usePlayerStore.setState(state => ({
+        currentBook: state.currentBook ? {
+          ...state.currentBook,
+          skip_intro: editSkipIntro,
+          skip_outro: editSkipOutro
+        } : null
+      }));
+      localStorage.setItem(`offline_skip_${currentBook.id}`, JSON.stringify({ skip_intro: editSkipIntro, skip_outro: editSkipOutro }));
       setShowSettings(false);
     } catch (err) {
       console.error('Failed to save settings', err);
@@ -633,12 +688,37 @@ const Player: React.FC = () => {
   // Fetch chapters for the current book
   useEffect(() => {
     if (currentBook?.id && token) {
+      if (isOfflineMode) return;
       apiClient.get(`/api/books/${currentBook.id}/chapters`).then(res => {
         setChapters(res.data);
         setCurrentGroupIndex(0); // Reset group index when book changes
       }).catch(err => console.error('Failed to fetch chapters', err));
     }
-  }, [currentBook?.id, token]);
+  }, [currentBook?.id, token, isOfflineMode]);
+
+  useEffect(() => {
+    if (!currentBook?.id) return;
+    if (!isOfflineMode) return;
+    const completedTasks = downloadTasks.filter(t => t.bookId === currentBook.id && t.status === 'completed');
+    if (completedTasks.length === 0) {
+      setChapters([]);
+      return;
+    }
+    const sorted = [...completedTasks].sort((a, b) => {
+      if (a.chapterNum && b.chapterNum) return a.chapterNum - b.chapterNum;
+      return (a.title || '').localeCompare(b.title || '');
+    });
+    const offlineChapters = sorted.map((task, index) => ({
+      id: task.chapterId,
+      title: task.title,
+      book_id: task.bookId,
+      path: '',
+      chapter_index: task.chapterNum ?? index + 1,
+      duration: task.duration || 0
+    }));
+    setChapters(offlineChapters);
+    setCurrentGroupIndex(0);
+  }, [currentBook?.id, downloadTasks, isOfflineMode]);
   
   // Check cache status
   useEffect(() => {
@@ -807,7 +887,7 @@ const Player: React.FC = () => {
 
   // Update Controls: Create/Update Metadata when Chapter Changes
   useEffect(() => {
-    if (!currentBook || !currentChapter) return;
+    if (!currentBookId || !currentChapterId) return;
     
     // Check if we already have controls for this book to avoid full rebuild flicker?
     // But track name changes, so we must call create/update.
@@ -815,18 +895,18 @@ const Player: React.FC = () => {
     // Ensure we don't pass nulls.
     
     MusicControls.create({
-        track: currentChapter.title || '',
-        artist: currentBook.title || '',
-        cover: getCoverUrl(currentBook.cover_url, currentBook.library_id, currentBook.id) || '',
-        isPlaying: isPlaying, // Initial state
+        track: currentChapterTitle,
+        artist: currentBookTitle,
+        cover: getCoverUrl(currentBookCoverUrl, currentBookLibraryId, currentBookId) || '',
+        isPlaying: isPlayingRef.current,
         dismissable: true,
         hasPrev: true,
         hasNext: true,
         hasClose: true,
         hasScrubbing: true,
-        duration: duration,
-        elapsed: currentTime,
-        ticker: `正在播放: ${currentChapter.title || ''}`,
+        duration: durationRef.current,
+        elapsed: currentTimeRef.current,
+        ticker: `正在播放: ${currentChapterTitle}`,
         playIcon: '',
         pauseIcon: '',
         prevIcon: '',
@@ -835,7 +915,7 @@ const Player: React.FC = () => {
         notificationIcon: ''
     }).catch(console.error);
 
-  }, [currentBook?.id, currentChapter?.id]); // Only recreate if book/chapter identity changes
+  }, [currentBookId, currentBookTitle, currentBookCoverUrl, currentBookLibraryId, currentChapterId, currentChapterTitle]);
 
   // Update Controls: Play/Pause State
   useEffect(() => {
@@ -844,26 +924,26 @@ const Player: React.FC = () => {
           isPlaying: isPlaying,
           elapsed: currentTime
       });
-  }, [isPlaying]);
+  }, [isPlaying, currentTime]);
   
   // Update Controls: Duration (if loaded late)
    useEffect(() => {
-       if (duration > 0 && currentChapter) {
+       if (duration > 0 && currentChapterId) {
             // Re-create controls to update duration if it wasn't available initially
             // This is necessary because updateElapsed doesn't update the total duration on all platforms
             MusicControls.create({
-                track: currentChapter.title || '',
-                artist: currentBook?.title || '',
-                cover: getCoverUrl(currentBook?.cover_url, currentBook?.library_id, currentBook?.id) || '',
-                isPlaying: isPlaying,
+                track: currentChapterTitle,
+                artist: currentBookTitle,
+                cover: getCoverUrl(currentBookCoverUrl, currentBookLibraryId, currentBookId) || '',
+                isPlaying: isPlayingRef.current,
                 dismissable: true,
                 hasPrev: true,
                 hasNext: true,
                 hasClose: true,
                 hasScrubbing: true,
                 duration: duration,
-                elapsed: currentTime,
-                ticker: `正在播放: ${currentChapter.title || ''}`,
+                elapsed: currentTimeRef.current,
+                ticker: `正在播放: ${currentChapterTitle}`,
                 playIcon: '',
                 pauseIcon: '',
                 prevIcon: '',
@@ -872,7 +952,7 @@ const Player: React.FC = () => {
                 notificationIcon: ''
             }).catch(console.error);
        }
-   }, [duration]);
+   }, [duration, currentBookTitle, currentBookCoverUrl, currentBookLibraryId, currentBookId, currentChapterId, currentChapterTitle]);
 
   // Preload next chapter logic (Auto-cache)
   useEffect(() => {
@@ -1039,14 +1119,10 @@ const Player: React.FC = () => {
     audioRef.current.volume = volume;
   }, [volume]);
 
-  const currentTimeRef = useRef(0);
-  useEffect(() => {
-    currentTimeRef.current = currentTime;
-  }, [currentTime]);
-
   // Sync progress to backend
   useEffect(() => {
     if (isPlaying && currentBook && currentChapter) {
+      if (isOfflineMode) return;
       // Save progress immediately when starting
       const saveProgress = () => {
         if (!token) return;
@@ -1066,7 +1142,7 @@ const Player: React.FC = () => {
     return () => {
       if (progressTimerRef.current) clearInterval(progressTimerRef.current);
     };
-  }, [isPlaying, currentBook, currentChapter, token]);
+  }, [isPlaying, currentBook, currentChapter, token, isOfflineMode]);
 
   const handleLoadedMetadata = () => {
     if (audioRef.current) {
@@ -1996,6 +2072,7 @@ const Player: React.FC = () => {
                                   chapterId: chapter.id,
                                   title: chapter.title,
                                   chapterNum: chapter.chapter_index || (actualIndex + 1),
+                                  duration: chapter.duration,
                                   coverUrl: currentBook!.cover_url
                                 });
                               }}

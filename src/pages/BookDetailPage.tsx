@@ -32,6 +32,12 @@ import { getCachedFile } from '../utils/mobileCacheManager';
 import ExpandableTitle from '../components/ExpandableTitle';
 import { setAlpha, toSolidColor } from '../utils/color';
 
+type ChapterProgressMeta = {
+  progress_updated_at?: string;
+};
+
+const getProgressUpdatedAt = (chapter: Chapter) => (chapter as Chapter & ChapterProgressMeta).progress_updated_at;
+
 const BookDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -71,7 +77,7 @@ const BookDetailPage: React.FC = () => {
     if (currentChapter?.book_id === book?.id) {
       setHighlightedChapterId(null);
     }
-  }, [currentChapter?.id, book?.id]);
+  }, [currentChapter?.id, currentChapter?.book_id, book?.id]);
   
   const [cachedChapters, setCachedChapters] = useState<Set<string>>(new Set());
   const { addTask, tasks: downloadTasks } = useDownloadStore();
@@ -156,10 +162,10 @@ const BookDetailPage: React.FC = () => {
       } 
       // 2. Fallback: Most recently played chapter from history
       else {
-        const playedChapters = [...chapters].filter(c => (c as any).progress_updated_at);
+        const playedChapters = [...chapters].filter(c => !!getProgressUpdatedAt(c));
         if (playedChapters.length > 0) {
           playedChapters.sort((a, b) => {
-            return new Date((b as any).progress_updated_at).getTime() - new Date((a as any).progress_updated_at).getTime();
+            return new Date(getProgressUpdatedAt(b) || 0).getTime() - new Date(getProgressUpdatedAt(a) || 0).getTime();
           });
           targetChapter = playedChapters[0];
         }
@@ -224,7 +230,7 @@ const BookDetailPage: React.FC = () => {
         }
       }
     }
-  }, [book, currentChapter, chapters, mainChapters, extraChapters, activeTab, currentGroupIndex, currentChapters, chaptersPerGroup]);
+  }, [book, currentChapter, chapters, mainChapters, extraChapters, activeTab, currentGroupIndex, currentChapters, chaptersPerGroup, id]);
 
   const scrollGroups = (direction: 'left' | 'right') => {
     if (scrollRef.current) {
@@ -448,6 +454,7 @@ const BookDetailPage: React.FC = () => {
         chapterId: c.id,
         title: c.title,
         chapterNum: c.chapter_index,
+        duration: c.duration,
         coverUrl: book!.cover_url
       });
     });
@@ -727,7 +734,6 @@ const BookDetailPage: React.FC = () => {
           {(groups[currentGroupIndex]?.chapters || currentChapters).map((chapter, index) => {
             const actualIndex = currentGroupIndex * chaptersPerGroup + index;
             const isCurrent = currentChapter?.id === chapter.id;
-            const isPlayingThisBook = currentChapter?.book_id === book?.id;
             // Active means playing OR highlighted
             const isActive = isCurrent || highlightedChapterId === chapter.id;
 
@@ -835,6 +841,7 @@ const BookDetailPage: React.FC = () => {
                           chapterId: chapter.id,
                           title: chapter.title,
                           chapterNum: chapter.chapter_index || (actualIndex + 1),
+                          duration: chapter.duration,
                           coverUrl: book!.cover_url
                         });
                       }}
