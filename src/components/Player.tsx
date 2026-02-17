@@ -912,6 +912,7 @@ const Player: React.FC = () => {
                   themeColor: currentBook.theme_color,
                   chapterId: nextChapter.id,
                   title: nextChapter.title,
+                  chapterNum: nextChapter.chapter_index,
                   coverUrl: currentBook.cover_url
               });
            }
@@ -1994,6 +1995,7 @@ const Player: React.FC = () => {
                                   themeColor: currentBook!.theme_color,
                                   chapterId: chapter.id,
                                   title: chapter.title,
+                                  chapterNum: chapter.chapter_index || (actualIndex + 1),
                                   coverUrl: currentBook!.cover_url
                                 });
                               }}

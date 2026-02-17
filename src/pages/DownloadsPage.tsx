@@ -55,6 +55,16 @@ const DownloadsPage: React.FC<{ isOfflineMode?: boolean }> = ({ isOfflineMode = 
       groups[bookId].tasks.push(task);
     });
 
+    // Sort tasks by chapterNum
+    Object.values(groups).forEach(group => {
+      group.tasks.sort((a, b) => {
+        if (a.chapterNum && b.chapterNum) {
+          return a.chapterNum - b.chapterNum;
+        }
+        return (a.title || '').localeCompare(b.title || '');
+      });
+    });
+
     return Object.entries(groups).map(([bookId, data]) => ({
       bookId,
       bookTitle: data.bookTitle,
@@ -410,7 +420,9 @@ const DownloadsPage: React.FC<{ isOfflineMode?: boolean }> = ({ isOfflineMode = 
 
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 min-w-0">
-                              <h4 className="font-medium text-slate-900 dark:text-white truncate text-sm">{task.title || `章节 ${task.chapterId}`}</h4>
+                              <h4 className="font-medium text-slate-900 dark:text-white truncate text-sm">
+                                {task.chapterNum ? `第${task.chapterNum}章 ` : ''}{task.title || `章节 ${task.chapterId}`}
+                              </h4>
                               <span
                                 className={`text-[10px] px-1.5 py-0.5 rounded-full whitespace-nowrap shrink-0 ${
                                   task.status === 'completed'

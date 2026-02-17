@@ -447,6 +447,7 @@ const BookDetailPage: React.FC = () => {
         themeColor: book!.theme_color,
         chapterId: c.id,
         title: c.title,
+        chapterNum: c.chapter_index,
         coverUrl: book!.cover_url
       });
     });
@@ -833,6 +834,7 @@ const BookDetailPage: React.FC = () => {
                           themeColor: book!.theme_color,
                           chapterId: chapter.id,
                           title: chapter.title,
+                          chapterNum: chapter.chapter_index || (actualIndex + 1),
                           coverUrl: book!.cover_url
                         });
                       }}
