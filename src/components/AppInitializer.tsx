@@ -17,19 +17,17 @@ interface AppInitializerProps {
   children: React.ReactNode;
 }
 
-const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
-  const [isInitializing, setIsInitializing] = useState(true);
-  const [statusMessage, setStatusMessage] = useState('正在启动...');
-  const { setAuth, setActiveUrl, setServerUrl } = useAuthStore();
-  const navigate = useNavigate();
-  const location = useLocation();
+import { useDownloadStore } from '../store/downloadStore';
 
-  // Check if running in Electron
-  const isElectron = typeof window !== 'undefined' && !!(window as WindowWithElectron).electronAPI;
-  // Check if running in App (Capacitor) - this project is specifically for App
-  const isApp = true; 
+// ... existing code ...
+
+const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
+  // ... existing code ...
 
   useEffect(() => {
+    // Initialize download queue
+    useDownloadStore.getState().initializeQueue();
+
     // Request permissions
     if (isApp) {
       // Notification permission for media controls

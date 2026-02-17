@@ -40,6 +40,10 @@ interface DownloadState {
   retryTask: (taskId: string) => void;
   clearAllTasks: () => void;
   redownloadCover: (taskId: string) => Promise<void>;
+  isPaused: boolean;
+  pauseQueue: () => void;
+  resumeQueue: () => void;
+  initializeQueue: () => void;
 }
 
 export const useDownloadStore = create<DownloadState>()(
@@ -47,6 +51,26 @@ export const useDownloadStore = create<DownloadState>()(
     (set, get) => ({
       tasks: [],
       activeTaskId: null,
+      isPaused: false,
+
+      initializeQueue: () => {
+        set(state => ({
+          tasks: state.tasks.map(t => 
+            t.status === 'downloading' ? { ...t, status: 'pending' } : t
+          ),
+          activeTaskId: null
+        }));
+        get().processQueue();
+      },
+
+      pauseQueue: () => {
+        set({ isPaused: true });
+      },
+
+      resumeQueue: () => {
+        set({ isPaused: false });
+        get().processQueue();
+      },
 
       clearAllTasks: () => {
         set({ tasks: [], activeTaskId: null });
@@ -111,8 +135,8 @@ export const useDownloadStore = create<DownloadState>()(
       },
 
       processQueue: async () => {
-        const { tasks, activeTaskId, startDownload } = get();
-        if (activeTaskId) return;
+        const { tasks, activeTaskId, startDownload, isPaused } = get();
+        if (activeTaskId || isPaused) return;
 
         const nextTask = tasks.find(t => t.status === 'pending');
         if (nextTask) {
@@ -175,6 +199,7 @@ export const useDownloadStore = create<DownloadState>()(
           failTask(taskId, message);
         } finally {
           set({ activeTaskId: null });
+          get().processQueue();
         }
       },
 
