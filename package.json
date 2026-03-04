@@ -8,6 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "sync": "cap sync && node scripts/apply-patches.cjs",
     "postinstall": "node scripts/apply-patches.cjs"
   },
   "dependencies": {
