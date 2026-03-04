@@ -123,7 +123,9 @@ const LoginPage: React.FC = () => {
               const response = await CapacitorHttp.post({
                   url: loginUrl,
                   headers: { 'Content-Type': 'application/json' },
-                  data: { username, password }
+                  data: { username, password },
+                  // Explicitly allow redirects if supported, or let native handle it.
+                  // CapacitorHttp usually follows redirects by default on Android/iOS native layer.
               });
               
               // CapacitorHttp response structure: { data, status, headers, url }
@@ -136,9 +138,26 @@ const LoginPage: React.FC = () => {
               if (responseRedirected) {
                   console.log('CapacitorHttp redirected to:', responseUrl);
               }
-          } catch (e) {
-              console.error("CapacitorHttp failed", e);
-              throw e;
+          } catch (e: any) {
+             console.error("CapacitorHttp failed", e);
+             
+             // If error is related to host resolution or redirects, try fetch as fallback
+             // Native HTTP might be stricter about some network conditions
+             try {
+                console.log("Falling back to standard fetch...");
+                const fallbackResponse = await fetch(loginUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                responseData = await fallbackResponse.json().catch(() => ({}));
+                responseStatus = fallbackResponse.status;
+                responseUrl = fallbackResponse.url;
+                responseRedirected = fallbackResponse.redirected;
+             } catch (fetchError) {
+                console.error("Fallback fetch also failed", fetchError);
+                throw e; // Throw original error
+             }
           }
       } else {
           // Fallback for Electron / Web (though Electron should also use net or similar if possible, but fetch works mostly)
@@ -171,9 +190,9 @@ const LoginPage: React.FC = () => {
           // Handle Error
           const errorData = responseData || {};
           
-          // Special handling for 404 after redirect (POST -> GET issue)
-          if (responseStatus === 404 && responseRedirected) {
-               console.log('Redirect turned POST into GET (404). Retrying POST to new URL:', responseUrl);
+          // Special handling for 404/405 after redirect (POST -> GET issue)
+          if ((responseStatus === 404 || responseStatus === 405) && responseRedirected) {
+               console.log('Redirect turned POST into GET (404/405). Retrying POST to new URL:', responseUrl);
                
                if (isApp) {
                    // Retry with CapacitorHttp

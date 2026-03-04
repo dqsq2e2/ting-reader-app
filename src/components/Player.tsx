@@ -31,6 +31,8 @@ import { CapacitorMusicControls as MusicControls } from 'capacitor-music-control
 import { useDownloadStore } from '../store/downloadStore';
 import type { Chapter } from '../types';
 
+import ChapterList from './ChapterList';
+
 type MediaError = {
   code?: number;
   message?: string;
@@ -358,7 +360,7 @@ const Player: React.FC = () => {
                   setIsPlaying(true);
                   
                   // Perform initial seek if needed
-                  if (media._resumeTime > 0 && !media._initialSeekDone) {
+                  if (media._resumeTime && media._resumeTime > 0 && !media._initialSeekDone) {
                       console.log(`Performing initial seek to ${media._resumeTime}s`);
                       media.seekTo(media._resumeTime * 1000);
                       // Do NOT set _initialSeekDone = true here. 
@@ -409,7 +411,7 @@ const Player: React.FC = () => {
                   (position: number) => {
                       if (position > -1) {
                           // Prevent polling from overwriting store before initial seek is complete
-                          if (mediaRef.current._resumeTime > 0 && !mediaRef.current._initialSeekDone) {
+                          if (mediaRef.current?._resumeTime && mediaRef.current._resumeTime > 0 && !mediaRef.current._initialSeekDone) {
                               // Check if we are close enough? No, just wait for status callback to seek.
                               // Or if position is already close (maybe plugin seeked internally?), mark done.
                               if (Math.abs(position - mediaRef.current._resumeTime) < 2) {
@@ -425,7 +427,7 @@ const Player: React.FC = () => {
                           setCurrentTime(position);
                           
                           // Also update duration if available
-                          const d = mediaRef.current.getDuration();
+                          const d = mediaRef.current?.getDuration() || 0;
                           if (d > 0 && d !== duration) {
                               setDuration(d);
                           }
@@ -474,7 +476,7 @@ const Player: React.FC = () => {
         
         try {
             const fileName = `${chapterId}.mp3`;
-            const cachedPath = await getCachedFile(fileName);
+            const cachedPath = cachedChapters.get(chapterId) || await getCachedFile(fileName);
             
             if (!isMounted) return;
             if (currentChapter.id !== chapterId) return;
@@ -482,7 +484,13 @@ const Player: React.FC = () => {
             if (cachedPath) {
                 console.log('Using cached file:', cachedPath);
                 url = cachedPath;
-                setCachedUri({ id: chapterId, path: cachedPath });
+                if (!cachedChapters.has(chapterId)) {
+                     // Update map if found but not in state (e.g. from disk check)
+                     setCachedUri({ id: chapterId, path: cachedPath });
+                     setCachedChapters(prev => new Map(prev).set(chapterId, cachedPath));
+                } else {
+                     setCachedUri({ id: chapterId, path: cachedPath });
+                }
             } else {
                 console.log('File not in cache, streaming from server...');
                 setCachedUri(null);
@@ -540,17 +548,9 @@ const Player: React.FC = () => {
 
   const [showSettings, setShowSettings] = useState(false);
   const [currentGroupIndex, setCurrentGroupIndex] = useState(0);
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  const scrollGroups = (direction: 'left' | 'right') => {
-    if (scrollRef.current) {
-      const scrollAmount = 200;
-      scrollRef.current.scrollBy({
-        left: direction === 'left' ? -scrollAmount : scrollAmount,
-        behavior: 'smooth'
-      });
-    }
-  };
+  const [activeTab, setActiveTab] = useState<'main' | 'extra'>('main');
+  // scrollRef moved to ChapterList
+  
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [customMinutes, setCustomMinutes] = useState('');
   const [editSkipIntro, setEditSkipIntro] = useState(0);
@@ -561,8 +561,8 @@ const Player: React.FC = () => {
   const durationRef = useRef(duration);
   const currentBookId = currentBook?.id;
   const currentBookTitle = currentBook?.title || '';
-  const currentBookCoverUrl = currentBook?.cover_url;
-  const currentBookLibraryId = currentBook?.library_id;
+  const currentBookCoverUrl = currentBook?.coverUrl;
+  const currentBookLibraryId = currentBook?.libraryId;
   const currentChapterId = currentChapter?.id;
   const currentChapterTitle = currentChapter?.title || '';
 
@@ -580,35 +580,35 @@ const Player: React.FC = () => {
 
   // Use stored theme color from book to avoid flash
   useEffect(() => {
-    if (currentBook?.theme_color) {
-      setThemeColor(currentBook.theme_color);
+    if (currentBook?.themeColor) {
+      setThemeColor(currentBook.themeColor);
     }
-  }, [currentBook?.id, currentBook?.theme_color, setThemeColor]);
+  }, [currentBook?.id, currentBook?.themeColor, setThemeColor]);
 
   useEffect(() => {
     if (!currentBook) return;
     if (isOfflineMode) {
       const raw = localStorage.getItem(`offline_skip_${currentBook.id}`);
       const cached = raw ? JSON.parse(raw) : null;
-      const skipIntro = cached?.skip_intro ?? currentBook.skip_intro ?? 0;
-      const skipOutro = cached?.skip_outro ?? currentBook.skip_outro ?? 0;
+      const skipIntro = cached?.skip_intro ?? currentBook.skipIntro ?? 0;
+      const skipOutro = cached?.skip_outro ?? currentBook.skipOutro ?? 0;
       setEditSkipIntro(skipIntro);
       setEditSkipOutro(skipOutro);
 
       // Only update store if values differ to prevent infinite loop
-      if (currentBook.skip_intro !== skipIntro || currentBook.skip_outro !== skipOutro) {
+      if (currentBook.skipIntro !== skipIntro || currentBook.skipOutro !== skipOutro) {
         usePlayerStore.setState(state => ({
           currentBook: state.currentBook ? {
             ...state.currentBook,
-            skip_intro: skipIntro,
-            skip_outro: skipOutro
+            skipIntro: skipIntro,
+            skipOutro: skipOutro
           } : null
         }));
       }
       return;
     }
-    const skipIntro = currentBook.skip_intro ?? 0;
-    const skipOutro = currentBook.skip_outro ?? 0;
+    const skipIntro = currentBook.skipIntro ?? 0;
+    const skipOutro = currentBook.skipOutro ?? 0;
     setEditSkipIntro(skipIntro);
     setEditSkipOutro(skipOutro);
     localStorage.setItem(`offline_skip_${currentBook.id}`, JSON.stringify({ skip_intro: skipIntro, skip_outro: skipOutro }));
@@ -621,8 +621,8 @@ const Player: React.FC = () => {
       usePlayerStore.setState(state => ({
         currentBook: state.currentBook ? {
           ...state.currentBook,
-          skip_intro: editSkipIntro,
-          skip_outro: editSkipOutro
+          skipIntro: editSkipIntro,
+          skipOutro: editSkipOutro
         } : null
       }));
       setShowSettings(false);
@@ -636,8 +636,8 @@ const Player: React.FC = () => {
       usePlayerStore.setState(state => ({
         currentBook: state.currentBook ? {
           ...state.currentBook,
-          skip_intro: editSkipIntro,
-          skip_outro: editSkipOutro
+          skipIntro: editSkipIntro,
+          skipOutro: editSkipOutro
         } : null
       }));
       localStorage.setItem(`offline_skip_${currentBook.id}`, JSON.stringify({ skip_intro: editSkipIntro, skip_outro: editSkipOutro }));
@@ -648,18 +648,7 @@ const Player: React.FC = () => {
   };
 
   const chaptersPerGroup = 100;
-  const groups = React.useMemo(() => {
-    const g = [];
-    for (let i = 0; i < chapters.length; i += chaptersPerGroup) {
-      const slice = chapters.slice(i, i + chaptersPerGroup);
-      g.push({
-        start: slice[0]?.chapter_index || (i + 1),
-        end: slice[slice.length - 1]?.chapter_index || (i + slice.length),
-        chapters: slice
-      });
-    }
-    return g;
-  }, [chapters]);
+  // groups logic moved to ChapterList
 
   const [sleepTimer, setSleepTimer] = useState<number | null>(null);
   const progressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -671,17 +660,33 @@ const Player: React.FC = () => {
   // const [clientAutoDownload, setClientAutoDownload] = useState(false); // Moved to store
   const isInitialLoadRef = useRef(true);
   
-  const [cachedChapters, setCachedChapters] = useState<Set<string>>(new Set());
+  const [cachedChapters, setCachedChapters] = useState<Map<string, string>>(new Map());
   const { addTask, tasks: downloadTasks } = useDownloadStore();
 
   // Fetch settings for auto_preload
   useEffect(() => {
     if (!token) return;
     apiClient.get('/api/settings').then(res => {
-      setAutoPreload(!!res.data.auto_preload);
-      setAutoCache(!!res.data.auto_cache);
-      // setClientAutoDownload(!!res.data.client_auto_download); // Handled by store now
-      usePlayerStore.getState().setClientAutoDownload(!!res.data.client_auto_download);
+      // Check settingsJson first as these might be stored there
+      const settingsJson = res.data.settingsJson || {};
+      
+      // For autoPreload and autoCache, prefer settingsJson value if present, otherwise fallback to root value
+      // This handles the case where backend returns default values at root but actual user prefs in JSON
+      const ap = settingsJson.autoPreload !== undefined ? settingsJson.autoPreload : 
+                 (settingsJson.auto_preload !== undefined ? settingsJson.auto_preload : 
+                 (res.data.autoPreload !== undefined ? res.data.autoPreload : res.data.auto_preload));
+      
+      const ac = settingsJson.autoCache !== undefined ? settingsJson.autoCache : 
+                 (settingsJson.auto_cache !== undefined ? settingsJson.auto_cache : 
+                 (res.data.autoCache !== undefined ? res.data.autoCache : res.data.auto_cache));
+
+      setAutoPreload(!!ap);
+      setAutoCache(!!ac);
+      
+      // Client auto download is only in settingsJson (nested)
+      // We check both camelCase (from interceptor) and snake_case (raw)
+      const cad = settingsJson.clientAutoDownload !== undefined ? settingsJson.clientAutoDownload : settingsJson.client_auto_download;
+      usePlayerStore.getState().setClientAutoDownload(!!cad);
     }).catch(err => console.error('Failed to fetch settings', err));
   }, [token]);
 
@@ -711,10 +716,13 @@ const Player: React.FC = () => {
     const offlineChapters = sorted.map((task, index) => ({
       id: task.chapterId,
       title: task.title,
-      book_id: task.bookId,
+      bookId: task.bookId,
       path: '',
-      chapter_index: task.chapterNum ?? index + 1,
-      duration: task.duration || 0
+      chapterIndex: task.chapterNum ?? index + 1,
+      duration: task.duration || 0,
+      createdAt: '',
+      updatedAt: '',
+      size: 0
     }));
     setChapters(offlineChapters);
     setCurrentGroupIndex(0);
@@ -722,14 +730,14 @@ const Player: React.FC = () => {
   
   // Check cache status
   useEffect(() => {
+    if (chapters.length === 0) return;
+
     const checkCache = async () => {
-      if (chapters.length === 0) return;
-      
-      const newCached = new Set<string>();
+      const newCached = new Map<string, string>();
       try {
         await Promise.all(chapters.map(async (c) => {
              const path = await getCachedFile(`${c.id}.mp3`);
-             if (path) newCached.add(c.id);
+             if (path) newCached.set(c.id, path);
         }));
       } catch (e) {
         console.error('Failed to check cache (Mobile)', e);
@@ -737,19 +745,38 @@ const Player: React.FC = () => {
       setCachedChapters(newCached);
     };
 
+    // Only run full check on chapter load
     checkCache();
-    // Re-check when tasks change
+  }, [chapters]);
+
+  // Update cache when download completes (Incremental update)
+  useEffect(() => {
     const completedTasks = downloadTasks.filter(t => t.status === 'completed' && t.bookId === currentBook?.id);
     if (completedTasks.length > 0) {
-        completedTasks.forEach(t => {
-            setCachedChapters(prev => {
-                const next = new Set(prev);
-                next.add(t.chapterId);
-                return next;
-            });
-        });
+        // Find newly completed tasks not in cache
+        const newCompleted = completedTasks.filter(t => !cachedChapters.has(t.chapterId));
+        
+        if (newCompleted.length > 0) {
+            const updateCache = async () => {
+                const updates = new Map<string, string>();
+                await Promise.all(newCompleted.map(async (t) => {
+                    const path = await getCachedFile(`${t.chapterId}.mp3`);
+                    if (path) updates.set(t.chapterId, path);
+                }));
+                
+                if (updates.size > 0) {
+                    setCachedChapters(prev => {
+                        const next = new Map(prev);
+                        updates.forEach((path, id) => next.set(id, path));
+                        return next;
+                    });
+                }
+            };
+            updateCache();
+        }
     }
-  }, [chapters, downloadTasks, currentBook?.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [downloadTasks, currentBook?.id]); // removed cachedChapters from dep to prevent loop
 
   // Close timer menu when clicking outside
   useEffect(() => {
@@ -762,22 +789,7 @@ const Player: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Auto-scroll to current chapter in list
-  useEffect(() => {
-    if (showChapters && currentChapter && chapters.length > 0) {
-       const index = chapters.findIndex(c => c.id === currentChapter.id);
-       if (index !== -1) {
-           const groupIndex = Math.floor(index / chaptersPerGroup);
-           if (currentGroupIndex !== groupIndex) {
-               setCurrentGroupIndex(groupIndex);
-           }
-           setTimeout(() => {
-               const el = document.getElementById(`player-chapter-${currentChapter.id}`);
-               if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-           }, 100);
-       }
-    }
-  }, [chapters, currentChapter, currentGroupIndex, setCurrentGroupIndex, showChapters]);
+  // Auto-scroll logic moved to ChapterList
 
   // Reset initial load ref when chapter changes
   useEffect(() => {
@@ -959,10 +971,8 @@ const Player: React.FC = () => {
     if ((!autoPreload && !autoCache && !clientAutoDownload) || !currentChapter || !currentBook) return;
     
     // Find next chapter index
-    apiClient.get(`/api/books/${currentBook.id}/chapters`).then(res => {
-      const chapters = res.data;
-      const currentIndex = chapters.findIndex(c => c.id === currentChapter.id);
-      if (currentIndex !== -1 && currentIndex < chapters.length - 1) {
+    const currentIndex = chapters.findIndex(c => c.id === currentChapter.id);
+    if (currentIndex !== -1 && currentIndex < chapters.length - 1) {
         const nextChapter = chapters[currentIndex + 1];
         
         // 1. Auto Preload (Memory - Audio Object)
@@ -989,17 +999,16 @@ const Player: React.FC = () => {
                   id: nextChapter.id,
                   bookId: currentBook.id,
                   bookTitle: currentBook.title,
-                  themeColor: currentBook.theme_color,
+                  themeColor: currentBook.themeColor,
                   chapterId: nextChapter.id,
                   title: nextChapter.title,
-                  chapterNum: nextChapter.chapter_index,
-                  coverUrl: currentBook.cover_url
+                  chapterNum: nextChapter.chapterIndex,
+                  coverUrl: currentBook.coverUrl
               });
            }
         }
-      }
-    }).catch(err => console.error('Preload failed', err));
-  }, [autoPreload, autoCache, clientAutoDownload, currentBook, currentChapter]);
+    }
+  }, [autoPreload, autoCache, clientAutoDownload, currentBook, currentChapter, chapters]);
 
   // Handle Skip Intro and Outro
   // Replaced handleTimeUpdate with polling in initMedia
@@ -1009,21 +1018,21 @@ const Player: React.FC = () => {
      // Check for skip intro/outro every second using currentTime
      if (isPlaying) {
         // Handle Skip Intro (only once per chapter load ideally, but here simple check)
-        if (isInitialLoadRef.current && currentBook?.skip_intro) {
-            if (currentTime < currentBook.skip_intro) {
+        if (isInitialLoadRef.current && currentBook?.skipIntro) {
+            if (currentTime < currentBook.skipIntro) {
                 // Seek
                 if (mediaRef.current) {
-                    mediaRef.current.seekTo(currentBook.skip_intro * 1000); // ms
-                    setCurrentTime(currentBook.skip_intro);
+                    mediaRef.current.seekTo(currentBook.skipIntro * 1000); // ms
+                    setCurrentTime(currentBook.skipIntro);
                 }
             }
             isInitialLoadRef.current = false;
         }
 
         // Handle Skip Outro
-        if (currentBook?.skip_outro && duration > 0) {
-            const minChapterDuration = (currentBook.skip_intro || 0) + currentBook.skip_outro + 10;
-            if (duration > minChapterDuration && (duration - currentTime) <= currentBook.skip_outro) {
+        if (currentBook?.skipOutro && duration > 0) {
+            const minChapterDuration = (currentBook.skipIntro || 0) + currentBook.skipOutro + 10;
+            if (duration > minChapterDuration && (duration - currentTime) <= currentBook.skipOutro) {
                 nextChapter();
             }
         }
@@ -1062,20 +1071,20 @@ const Player: React.FC = () => {
     }
 
     // Handle Skip Intro
-    if (isInitialLoadRef.current && currentBook?.skip_intro) {
-      if (time < currentBook.skip_intro) {
-        audioRef.current.currentTime = currentBook.skip_intro;
-        setCurrentTime(currentBook.skip_intro);
+    if (isInitialLoadRef.current && currentBook?.skipIntro) {
+      if (time < currentBook.skipIntro) {
+        audioRef.current.currentTime = currentBook.skipIntro;
+        setCurrentTime(currentBook.skipIntro);
       }
       isInitialLoadRef.current = false;
     }
 
     // Handle Skip Outro
-    if (currentBook?.skip_outro && duration > 0) {
+    if (currentBook?.skipOutro && duration > 0) {
       // Only skip if the chapter is long enough to actually have an outro
       // and we've played at least some of it
-      const minChapterDuration = (currentBook.skip_intro || 0) + currentBook.skip_outro + 10;
-      if (duration > minChapterDuration && (duration - time) <= currentBook.skip_outro) {
+      const minChapterDuration = (currentBook.skipIntro || 0) + currentBook.skipOutro + 10;
+      if (duration > minChapterDuration && (duration - time) <= currentBook.skipOutro) {
         nextChapter();
       }
     }
@@ -1211,9 +1220,9 @@ const Player: React.FC = () => {
   };
 
   const getChapterProgressText = (chapter: Chapter) => {
-    if (!chapter.progress_position || !chapter.duration) return null;
+    if (!chapter.progressPosition || !chapter.duration) return null;
     
-    const percent = Math.floor((chapter.progress_position / chapter.duration) * 100);
+    const percent = Math.floor((chapter.progressPosition / chapter.duration) * 100);
     if (percent === 0) return null;
     if (percent >= 95) return '已播完';
     return `已播${percent}%`;
@@ -1380,7 +1389,7 @@ const Player: React.FC = () => {
                 onClick={toggleFullscreen}
               >
                 <img 
-                  src={getCoverUrl(currentBook?.cover_url, currentBook?.library_id, currentBook?.id)} 
+                  src={getCoverUrl(currentBook?.coverUrl, currentBook?.libraryId, currentBook?.id)} 
                   alt={currentBook?.title}
                   crossOrigin="anonymous"
                   className="w-full h-full object-cover"
@@ -1621,33 +1630,21 @@ const Player: React.FC = () => {
                 onClick={() => {
                   // Calculate group index for current chapter
                   if (currentChapter && chapters.length > 0) {
-                    const index = chapters.findIndex(c => c.id === currentChapter.id);
-                    if (index !== -1) {
-                      const groupIndex = Math.floor(index / chaptersPerGroup);
-                      setCurrentGroupIndex(groupIndex);
-                      
-                      // Auto scroll to current chapter and group tab
-                      setTimeout(() => {
-                        // 1. Scroll to chapter
-                        const chapterEl = document.getElementById(`player-chapter-${currentChapter.id}`);
-                        if (chapterEl) {
-                          chapterEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
-                        }
+                    const isExtra = !!currentChapter.isExtra || /番外|SP|Extra/i.test(currentChapter.title);
+                    const targetTab = isExtra ? 'extra' : 'main';
+                    if (activeTab !== targetTab) setActiveTab(targetTab);
 
-                        // 2. Scroll group tab into view
-                        const groupTab = document.getElementById(`player-group-tab-${groupIndex}`);
-                        const container = scrollRef.current;
-                        if (groupTab && container) {
-                          const containerWidth = container.offsetWidth;
-                          const tabWidth = groupTab.offsetWidth;
-                          const tabLeft = groupTab.offsetLeft;
-                          
-                          container.scrollTo({
-                            left: tabLeft - containerWidth / 2 + tabWidth / 2,
-                            behavior: 'smooth'
-                          });
+                    const targetList = chapters.filter(c => {
+                         const cIsExtra = !!c.isExtra || /番外|SP|Extra/i.test(c.title);
+                         return cIsExtra === isExtra;
+                    });
+
+                    const index = targetList.findIndex(c => c.id === currentChapter.id);
+                    if (index !== -1) {
+                        const groupIndex = Math.floor(index / chaptersPerGroup);
+                        if (currentGroupIndex !== groupIndex) {
+                            setCurrentGroupIndex(groupIndex);
                         }
-                      }, 100);
                     }
                   }
                   setShowChapters(true);
@@ -1669,7 +1666,7 @@ const Player: React.FC = () => {
           <div className="flex-1 flex flex-col items-center justify-center max-w-4xl mx-auto w-full gap-4 sm:gap-8">
             <div className="w-full max-w-[240px] sm:max-w-[320px] lg:max-w-[400px] aspect-square rounded-[32px] sm:rounded-[40px] overflow-hidden shadow-2xl border-4 sm:border-8 border-white dark:border-slate-800 transition-all duration-500">
               <img 
-                src={getCoverUrl(currentBook?.cover_url, currentBook?.library_id, currentBook?.id)} 
+                src={getCoverUrl(currentBook?.coverUrl, currentBook?.libraryId, currentBook?.id)} 
                 alt={currentBook?.title}
                 crossOrigin="anonymous"
                 className="w-full h-full object-cover"
@@ -1776,14 +1773,14 @@ const Player: React.FC = () => {
                   <div className="p-2">
                     <SkipBack size={18} className="sm:w-5 sm:h-5" />
                   </div>
-                  <span className="text-[10px] sm:text-xs font-bold whitespace-nowrap">片头 {currentBook?.skip_intro || 0}s</span>
+                  <span className="text-[10px] sm:text-xs font-bold whitespace-nowrap">片头 {currentBook?.skipIntro || 0}s</span>
                 </div>
 
                 <div className="flex flex-col items-center gap-1 sm:gap-1.5">
                   <div className="p-2">
                     <SkipForward size={18} className="sm:w-5 sm:h-5" />
                   </div>
-                  <span className="text-[10px] sm:text-xs font-bold whitespace-nowrap">片尾 {currentBook?.skip_outro || 0}s</span>
+                  <span className="text-[10px] sm:text-xs font-bold whitespace-nowrap">片尾 {currentBook?.skipOutro || 0}s</span>
                 </div>
 
                 <div className="relative" ref={timerMenuRef}>
@@ -1948,158 +1945,25 @@ const Player: React.FC = () => {
                   </button>
                 </div>
 
-                {/* Chapter Groups Selector */}
-                {groups.length > 0 && (
-                  <div className="relative group/nav border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
-                    <button 
-                      onClick={() => scrollGroups('left')}
-                      className="absolute left-0 top-1/2 -translate-y-1/2 z-10 p-1 bg-white/80 dark:bg-slate-800/80 backdrop-blur shadow-md rounded-r-xl opacity-0 group-hover/nav:opacity-100 transition-opacity hidden sm:block"
-                    >
-                      <ChevronLeft size={20} className="text-slate-600 dark:text-slate-400" />
-                    </button>
-                    <div 
-                      ref={scrollRef}
-                      className="flex gap-2 p-4 overflow-x-auto no-scrollbar scroll-smooth snap-x"
-                    >
-                      {groups.map((group, index) => (
-                        <button
-                          key={index}
-                          id={`player-group-tab-${index}`}
-                          onClick={() => setCurrentGroupIndex(index)}
-                          className={`px-4 py-2 rounded-xl text-sm font-bold transition-all border shrink-0 snap-start ${
-                            currentGroupIndex === index
-                              ? 'text-white shadow-lg shadow-primary-500/30'
-                              : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700'
-                          }`}
-                          style={currentGroupIndex === index ? { 
-                            backgroundColor: themeColor.replace('0.15', '1.0').replace('0.1', '1.0'),
-                            borderColor: themeColor.replace('0.15', '1.0').replace('0.1', '1.0')
-                          } : {}}
-                        >
-                          第 {group.start}-{group.end} 章
-                        </button>
-                      ))}
-                    </div>
-                    <button 
-                      onClick={() => scrollGroups('right')}
-                      className="absolute right-0 top-1/2 -translate-y-1/2 z-10 p-1 bg-white/80 dark:bg-slate-800/80 backdrop-blur shadow-md rounded-l-xl opacity-0 group-hover/nav:opacity-100 transition-opacity hidden sm:block"
-                    >
-                      <ChevronLeft size={20} className="rotate-180 text-slate-600 dark:text-slate-400" />
-                    </button>
-                  </div>
-                )}
-
-                <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                  {(groups[currentGroupIndex]?.chapters || chapters).map((chapter, index) => {
-                    const actualIndex = currentGroupIndex * chaptersPerGroup + index;
-                    const isCurrent = currentChapter?.id === chapter.id;
-                    const isCached = cachedChapters.has(chapter.id);
-                    const downloadTask = downloadTasks.find(t => t.id === chapter.id);
-                    const isDownloading = downloadTask?.status === 'pending' || downloadTask?.status === 'downloading';
-                    
-                    return (
-                      <div 
-                        key={chapter.id}
-                        id={`player-chapter-${chapter.id}`}
-                        className={`group flex items-center justify-between p-4 rounded-2xl transition-all border ${
-                          isCurrent 
-                            ? 'bg-opacity-10 border-opacity-20' 
-                            : 'bg-white dark:bg-slate-900 border-slate-100 dark:border-slate-800 hover:border-primary-200 dark:hover:border-primary-800'
-                        }`}
-                        style={isCurrent ? { 
-                          backgroundColor: themeColor.replace('0.15', '0.1').replace('0.1', '0.1'),
-                          borderColor: themeColor.replace('0.15', '0.3').replace('0.1', '0.3'),
-                        } : {}}
-                      >
-                        <div 
-                          className="flex items-center gap-4 min-w-0 flex-1 cursor-pointer"
-                          onClick={() => {
-                            playChapter(currentBook!, chapters, chapter);
-                            setShowChapters(false);
-                          }}
-                        >
-                          <div 
-                            className={`w-10 h-10 sm:w-12 sm:h-12 rounded-xl flex items-center justify-center font-bold text-base sm:text-lg shrink-0 ${
-                              isCurrent ? 'text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
-                            }`}
-                            style={isCurrent ? { backgroundColor: themeColor.replace('0.15', '1.0').replace('0.1', '1.0') } : {}}
-                          >
-                            {chapter.chapter_index || (actualIndex + 1)}
-                          </div>
-                          <div className="min-w-0">
-                            <p 
-                              className={`text-sm sm:text-base font-bold truncate ${isCurrent ? '' : 'text-slate-900 dark:text-white'}`}
-                              style={isCurrent ? { color: themeColor.replace('0.15', '1.0').replace('0.1', '1.0') } : {}}
-                            >
-                              {chapter.title}
-                            </p>
-                            <div className="flex items-center gap-3 mt-1">
-                              <div className="flex items-center gap-1 text-[10px] sm:text-xs text-slate-400 font-medium">
-                                <Clock size={12} />
-                                {formatTime(chapter.duration)}
-                              </div>
-                              {getChapterProgressText(chapter) && (
-                                <div 
-                                  className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${
-                                    getChapterProgressText(chapter) === '已播完' 
-                                      ? 'bg-green-50 text-green-500 dark:bg-green-900/20' 
-                                      : 'bg-primary-50 text-primary-600 dark:bg-primary-900/20'
-                                  }`}
-                                >
-                                  {getChapterProgressText(chapter)}
-                                </div>
-                              )}
-                              {isCached && (
-                                <div className="flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-                                   <Check size={10} />
-                                   已缓存
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                        
-                        <div className="flex items-center gap-4 pl-4 border-l border-slate-100 dark:border-slate-800 ml-4">
-                          {!isCached && !isDownloading && (
-                            <button 
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                addTask({
-                                  id: chapter.id,
-                                  bookId: currentBook!.id,
-                                  bookTitle: currentBook!.title,
-                                  themeColor: currentBook!.theme_color,
-                                  chapterId: chapter.id,
-                                  title: chapter.title,
-                                  chapterNum: chapter.chapter_index || (actualIndex + 1),
-                                  duration: chapter.duration,
-                                  coverUrl: currentBook!.cover_url
-                                });
-                              }}
-                              className="p-2 text-slate-400 hover:text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/20 rounded-full transition-all"
-                              title="下载缓存"
-                            >
-                              <Download size={18} />
-                            </button>
-                          )}
-                          {isDownloading && (
-                             <div className="p-2">
-                                <Loader2 size={18} className="text-primary-500 animate-spin" />
-                             </div>
-                          )}
-
-                          {isCurrent && isPlaying && (
-                            <div className="flex gap-1 items-end h-5">
-                              <div className="w-1 animate-music-bar-1 rounded-full" style={{ backgroundColor: themeColor.replace('0.15', '1.0').replace('0.1', '1.0') }}></div>
-                              <div className="w-1 animate-music-bar-2 rounded-full" style={{ backgroundColor: themeColor.replace('0.15', '1.0').replace('0.1', '1.0') }}></div>
-                              <div className="w-1 animate-music-bar-3 rounded-full" style={{ backgroundColor: themeColor.replace('0.15', '1.0').replace('0.1', '1.0') }}></div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                <ChapterList 
+                  chapters={chapters}
+                  currentChapter={currentChapter}
+                  currentBook={currentBook}
+                  isPlaying={isPlaying}
+                  themeColor={themeColor}
+                  currentGroupIndex={currentGroupIndex}
+                  onGroupChange={setCurrentGroupIndex}
+                  onPlayChapter={playChapter}
+                  onClose={() => setShowChapters(false)}
+                  downloadTasks={downloadTasks}
+                  cachedChapters={cachedChapters}
+                  addTask={addTask}
+                  activeTab={activeTab}
+                  onTabChange={(tab) => {
+                      setActiveTab(tab);
+                      setCurrentGroupIndex(0);
+                  }}
+                />
               </div>
             </div>
           )}

@@ -118,7 +118,7 @@ export const useDownloadStore = create<DownloadState>()(
           timestamp: Date.now()
         };
 
-        set({ tasks: [newTask, ...tasks] });
+        set({ tasks: [...tasks, newTask] });
         get().processQueue();
       },
 

@@ -191,14 +191,20 @@ export async function downloadToCache(url: string, fileName: string): Promise<st
         }
 
         // 1. Head request for size
-        const headResponse = await CapacitorHttp.request({
-            method: 'HEAD',
-            url: url
-        });
-        
-        const headers = headResponse.headers;
-        const contentLength = headers['Content-Length'] || headers['content-length'];
-        const totalSize = parseInt(contentLength || '0');
+        // Note: Some servers (or our backend streaming) might return incorrect Content-Length or not support HEAD well.
+        // If HEAD fails or returns 0, we fallback to simple GET.
+        let totalSize = 0;
+        try {
+            const headResponse = await CapacitorHttp.request({
+                method: 'HEAD',
+                url: url
+            });
+            const headers = headResponse.headers;
+            const contentLength = headers['Content-Length'] || headers['content-length'];
+            totalSize = parseInt(contentLength || '0');
+        } catch (e) {
+            console.warn('[Cache] HEAD request failed, falling back to GET', e);
+        }
 
         // Clean up any existing temp file
         try {
@@ -210,58 +216,71 @@ export async function downloadToCache(url: string, fileName: string): Promise<st
             void 0;
         }
 
-        if (totalSize > 0 && totalSize > 50 * 1024 * 1024) {
-            // Only use chunking for very large files (> 50MB) to avoid OOM
-            // Most audio chapters are 10-30MB, which CapacitorHttp can handle in one go
+        // 2. Download Strategy
+        // If size is massive (>50MB), use chunks. Otherwise simple GET.
+        // If totalSize is 0 (HEAD failed), we also use simple GET and hope for the best.
+        
+        if (totalSize > 50 * 1024 * 1024) {
+            // ... (chunk logic) ...
             console.log(`Downloading ${fileName} (temp) in chunks. Total: ${totalSize}`);
             const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
             let offset = 0;
+            
+            // Create empty file first
+            await Filesystem.writeFile({
+                path: `${CACHE_DIR}/${tempFileName}`,
+                data: '',
+                directory: DATA_DIR,
+                recursive: true
+            });
 
             while (offset < totalSize) {
                 const end = Math.min(offset + CHUNK_SIZE - 1, totalSize - 1);
-                const response = await CapacitorHttp.get({
-                    url: url,
-                    headers: { Range: `bytes=${offset}-${end}` },
-                    responseType: 'blob'
-                });
-
-                if (response.status >= 400) {
-                    throw new Error(`Download chunk failed: ${response.status}`);
-                }
-                
-                // response.data is Base64 string. 
-                // Filesystem.appendFile with no encoding writes binary from Base64.
-                if (offset === 0) {
-                    await Filesystem.writeFile({
-                        path: `${CACHE_DIR}/${tempFileName}`,
-                        data: response.data,
-                        directory: DATA_DIR,
-                        recursive: true
+                try {
+                    const response = await CapacitorHttp.get({
+                        url: url,
+                        headers: { Range: `bytes=${offset}-${end}` },
+                        responseType: 'blob'
                     });
-                } else {
+
+                    if (response.status >= 400) {
+                        throw new Error(`Download chunk failed: ${response.status}`);
+                    }
+                    
                     await Filesystem.appendFile({
                         path: `${CACHE_DIR}/${tempFileName}`,
                         data: response.data,
                         directory: DATA_DIR
                     });
+                    
+                    offset += CHUNK_SIZE;
+                } catch (e: any) {
+                     // Check if it's a "Range Not Satisfiable" or similar end-of-stream error
+                     if (e.message?.includes('416') || e.status === 416) {
+                         console.warn('Range not satisfiable, assuming download complete');
+                         break;
+                     }
+                     throw e;
                 }
-                
-                offset += CHUNK_SIZE;
             }
         } else {
-            // Single file download for standard size files
-            // This is safer and faster for typical audio files
+            // Single file download for standard size files or unknown size
             console.log(`Downloading ${fileName} (temp) single file...`);
              
             const response = await CapacitorHttp.get({
                 url: url,
-                responseType: 'blob'
+                responseType: 'blob',
+                // Increase timeout for large files
+                connectTimeout: 30000,
+                readTimeout: 60000
             });
             
-            if (response.status !== 200) throw new Error(`Download failed: ${response.status}`);
+            // Allow 200 (OK) and 206 (Partial Content)
+            if (response.status >= 400) {
+                throw new Error(`Download failed: ${response.status}`);
+            }
 
-            // response.data is Base64 string. 
-            // Filesystem.writeFile with no encoding writes binary from Base64.
+            // Write file
             await Filesystem.writeFile({
                 path: `${CACHE_DIR}/${tempFileName}`,
                 data: response.data,

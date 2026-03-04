@@ -3,13 +3,13 @@ import { persist } from 'zustand/middleware';
 import type { Book, Chapter } from '../types';
 
 type ChapterProgressMeta = {
-  progress_updated_at?: string;
-  progress_position?: number;
+  progressUpdatedAt?: string;
+  progressPosition?: number;
 };
 
-const getProgressUpdatedAt = (chapter: Chapter) => (chapter as Chapter & ChapterProgressMeta).progress_updated_at;
+const getProgressUpdatedAt = (chapter: Chapter) => (chapter as Chapter & ChapterProgressMeta).progressUpdatedAt;
 const getProgressPosition = (chapter: Chapter) => {
-  const value = (chapter as Chapter & ChapterProgressMeta).progress_position;
+  const value = (chapter as Chapter & ChapterProgressMeta).progressPosition;
   return typeof value === 'number' ? value : 0;
 };
 
@@ -95,8 +95,8 @@ export const usePlayerStore = create<PlayerState>()(
           duration: chapter.duration || 0
         };
 
-        if (book.theme_color) {
-          newState.themeColor = book.theme_color;
+        if (book.themeColor) {
+          newState.themeColor = book.themeColor;
         }
 
         set(newState);
@@ -197,8 +197,8 @@ export const usePlayerStore = create<PlayerState>()(
           duration: chapter.duration || 0
         };
 
-        if (book.theme_color) {
-          newState.themeColor = book.theme_color;
+        if (book.themeColor) {
+          newState.themeColor = book.themeColor;
         }
 
         set(newState);

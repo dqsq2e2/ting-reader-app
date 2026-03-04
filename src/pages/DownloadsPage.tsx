@@ -13,7 +13,7 @@ const DownloadsPage: React.FC<{ isOfflineMode?: boolean }> = ({ isOfflineMode = 
   const [activeTab, setActiveTab] = useState<'all' | 'downloading' | 'completed'>('all');
   const [expandedBookId, setExpandedBookId] = useState<string | null>(null);
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set());
-  const [fetchedBooks, setFetchedBooks] = useState<Record<string, { title: string; cover_url: string; library_id: string; theme_color?: string }>>({});
+  const [fetchedBooks, setFetchedBooks] = useState<Record<string, { title: string; coverUrl: string; libraryId: string; themeColor?: string }>>({});
   type ElectronApi = {
     removeCachedFile: (fileName: string) => Promise<void>;
   };
@@ -99,9 +99,9 @@ const DownloadsPage: React.FC<{ isOfflineMode?: boolean }> = ({ isOfflineMode = 
               ...prev,
               [id]: {
                 title: res.data.title,
-                cover_url: res.data.cover_url,
-                library_id: res.data.library_id,
-                theme_color: res.data.theme_color
+                coverUrl: res.data.coverUrl,
+                libraryId: res.data.libraryId,
+                themeColor: res.data.themeColor
               }
             }));
           }
@@ -159,6 +159,18 @@ const DownloadsPage: React.FC<{ isOfflineMode?: boolean }> = ({ isOfflineMode = 
           console.error('Failed to remove file:', err);
         }
       }
+
+      // Remove cached cover image
+      try {
+        if (isElectron && electronAPI) {
+          await electronAPI.removeCachedFile(`cover_${bookId}`);
+        } else {
+          await mobileCacheManager.removeCachedFile(`cover_${bookId}`);
+        }
+      } catch (err) {
+        console.error('Failed to remove cached cover:', err);
+      }
+
       const newSelected = new Set(selectedTasks);
       let changed = false;
       tasksToDelete.forEach(t => {
@@ -205,6 +217,33 @@ const DownloadsPage: React.FC<{ isOfflineMode?: boolean }> = ({ isOfflineMode = 
   const handleBatchDelete = async () => {
     if (selectedTasks.size === 0) return;
     if (confirm(`确定要删除选中的 ${selectedTasks.size} 个下载记录吗？`)) {
+      
+      // Identify books involved and check if we need to delete covers
+      const booksToCheck = new Set<string>();
+      selectedTasks.forEach(taskId => {
+          const task = tasks.find(t => t.id === taskId);
+          if (task && task.bookId) {
+              booksToCheck.add(task.bookId);
+          }
+      });
+
+      for (const bookId of booksToCheck) {
+          const bookTasks = tasks.filter(t => t.bookId === bookId);
+          const allBookTasksSelected = bookTasks.every(t => selectedTasks.has(t.id));
+          
+          if (allBookTasksSelected) {
+               try {
+                if (isElectron && electronAPI) {
+                  await electronAPI.removeCachedFile(`cover_${bookId}`);
+                } else {
+                  await mobileCacheManager.removeCachedFile(`cover_${bookId}`);
+                }
+            } catch (err) {
+                console.error('Failed to remove cached cover:', err);
+            }
+          }
+      }
+
       for (const taskId of selectedTasks) {
         const task = tasks.find(t => t.id === taskId);
         if (task) {
@@ -231,13 +270,13 @@ const DownloadsPage: React.FC<{ isOfflineMode?: boolean }> = ({ isOfflineMode = 
     const book: Book = {
       id: bookId,
       title: fetchedInfo?.title || task.bookTitle || '未知书籍',
-      cover_url: fetchedInfo?.cover_url || task.coverUrl || '',
-      library_id: fetchedInfo?.library_id || 'default',
-      theme_color: fetchedInfo?.theme_color || task.themeColor,
+      coverUrl: fetchedInfo?.coverUrl || task.coverUrl || '',
+      libraryId: fetchedInfo?.libraryId || 'default',
+      themeColor: fetchedInfo?.themeColor || task.themeColor,
       path: '',
-      book_hash: '',
-      created_at: now,
-      updated_at: now
+      bookHash: '',
+      createdAt: now,
+      updatedAt: now
     };
 
     const bookTasks = tasks
@@ -340,7 +379,7 @@ const DownloadsPage: React.FC<{ isOfflineMode?: boolean }> = ({ isOfflineMode = 
               const fetchedInfo = fetchedBooks[group.bookId];
               const displayTitle = fetchedInfo?.title || group.bookTitle;
               const displayCoverUrl = fetchedInfo
-                ? getCoverUrl(fetchedInfo.cover_url, fetchedInfo.library_id, group.bookId)
+                ? getCoverUrl(fetchedInfo.coverUrl, fetchedInfo.libraryId, group.bookId)
                 : getCoverUrl(group.coverUrl, 'default', group.bookId);
 
               return (

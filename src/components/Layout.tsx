@@ -12,7 +12,8 @@ import {
   Database,
   Users,
   Terminal,
-  Download
+  Download,
+  Puzzle
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { useTheme } from '../hooks/useTheme';
@@ -131,6 +132,7 @@ const Layout: React.FC = () => {
 
   const adminItems: MenuItem[] = [
     { icon: <Database size={20} />, label: '库管理', path: '/admin/libraries' },
+    { icon: <Puzzle size={20} />, label: '插件管理', path: '/admin/plugins' },
     { icon: <Terminal size={20} />, label: '任务日志', path: '/admin/tasks' },
     { icon: <Users size={20} />, label: '用户管理', path: '/admin/users' },
   ];
