@@ -138,7 +138,7 @@ const LoginPage: React.FC = () => {
               if (responseRedirected) {
                   console.log('CapacitorHttp redirected to:', responseUrl);
               }
-          } catch (e: any) {
+          } catch (e: unknown) {
              console.error("CapacitorHttp failed", e);
              
              // If error is related to host resolution or redirects, try fetch as fallback

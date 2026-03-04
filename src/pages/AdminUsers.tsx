@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import apiClient from '../api/client';
-import type { User as UserType } from '../types';
+import type { User as UserType, Library, Book } from '../types';
 import { 
   Plus, 
   Users,
@@ -15,11 +15,11 @@ import { formatDate } from '../utils/date';
 
 const AdminUsers: React.FC = () => {
   const [users, setUsers] = useState<UserType[]>([]);
-  const [loading, setLoading] = useState(true);
+  // const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   
-  const [libraries, setLibraries] = useState<any[]>([]);
+  const [libraries, setLibraries] = useState<Library[]>([]);
   const [formData, setFormData] = useState({
     username: '',
     password: '',
@@ -30,8 +30,8 @@ const AdminUsers: React.FC = () => {
   
   // Book Search
   const [bookSearchQuery, setBookSearchQuery] = useState('');
-  const [bookSearchResults, setBookSearchResults] = useState<any[]>([]);
-  const [selectedBooks, setSelectedBooks] = useState<any[]>([]);
+  const [bookSearchResults, setBookSearchResults] = useState<Book[]>([]);
+  const [selectedBooks, setSelectedBooks] = useState<Book[]>([]);
   const [isSearchingBooks, setIsSearchingBooks] = useState(false);
 
   useEffect(() => {
@@ -55,7 +55,7 @@ const AdminUsers: React.FC = () => {
     } catch (err) {
       console.error('Failed to fetch users', err);
     } finally {
-      setLoading(false);
+      // setLoading(false);
     }
   };
 
@@ -78,20 +78,6 @@ const AdminUsers: React.FC = () => {
     }
   }, [bookSearchQuery]);
 
-  const handleOpenAddModal = () => {
-    setEditingId(null);
-    setFormData({ 
-      username: '', 
-      password: '', 
-      role: 'user', 
-      librariesAccessible: [], 
-      booksAccessible: [] 
-    });
-    setSelectedBooks([]);
-    setBookSearchQuery('');
-    setIsModalOpen(true);
-  };
-
   const handleOpenEditModal = async (user: UserType) => {
     setEditingId(user.id);
     const booksAccessible = Array.isArray(user.booksAccessible) ? user.booksAccessible : [];
@@ -108,7 +94,9 @@ const AdminUsers: React.FC = () => {
         try {
           const res = await apiClient.get(`/api/books/${bid}`);
           books.push(res.data);
-        } catch (e) {}
+        } catch {
+            // ignore
+        }
       }
     }
     setSelectedBooks(books);
@@ -131,13 +119,14 @@ const AdminUsers: React.FC = () => {
       
       // If admin, they have access to all, so we don't need to send specific libraries
       if (payload.role === 'admin') {
-        delete (payload as any).librariesAccessible;
-        delete (payload as any).booksAccessible;
+        delete (payload as Partial<typeof formData>).librariesAccessible;
+        delete (payload as Partial<typeof formData>).booksAccessible;
       }
 
       if (editingId) {
         const currentUser = users.find(u => u.id === editingId);
-        const updateData: any = {};
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const updateData: Record<string, any> = {};
         
         if (payload.username !== currentUser?.username) {
           updateData.username = payload.username;
@@ -170,8 +159,14 @@ const AdminUsers: React.FC = () => {
       });
       setEditingId(null);
       fetchUsers();
-    } catch (err: any) {
-      alert(err.response?.data?.error || '操作失败');
+    } catch (err: unknown) {
+        if (typeof err === 'object' && err !== null && 'response' in err) {
+             // eslint-disable-next-line @typescript-eslint/no-explicit-any
+             const resp = (err as any).response;
+             alert(resp?.data?.error || '操作失败');
+        } else {
+             alert('操作失败');
+        }
     }
   };
 
@@ -180,7 +175,7 @@ const AdminUsers: React.FC = () => {
     try {
       await apiClient.delete(`/api/users/${id}`);
       fetchUsers();
-    } catch (err) {
+    } catch {
       alert('删除失败');
     }
   };

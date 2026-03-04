@@ -5,8 +5,6 @@ import {
   Download, 
   Loader2, 
   ChevronLeft,
-  Play,
-  Pause
 } from 'lucide-react';
 import { type Chapter, type Book } from '../types';
 import { type DownloadTask } from '../store/downloadStore';
@@ -23,7 +21,7 @@ interface ChapterListProps {
   onClose: () => void;
   downloadTasks: DownloadTask[];
   cachedChapters: Map<string, string>;
-  addTask: (task: any) => void;
+  addTask: (task: DownloadTask) => void;
   activeTab: 'main' | 'extra';
   onTabChange: (tab: 'main' | 'extra') => void;
 }

@@ -26,9 +26,9 @@ import {
   AlertTriangle,
   Download,
   Check,
-  RefreshCw,
+  // RefreshCw,
   Settings,
-  Wand2
+  // Wand2
 } from 'lucide-react';
 import { getCoverUrl } from '../utils/image';
 import { useAuthStore } from '../store/authStore';
@@ -61,12 +61,13 @@ const BookDetailPage: React.FC = () => {
   const [scraping, setScraping] = useState(false);
   
   // Regex Generator State
-  const [showRegexGenerator, setShowRegexGenerator] = useState(false);
-  const [genFilename, setGenFilename] = useState('');
-  const [genNum, setGenNum] = useState('');
-  const [genTitle, setGenTitle] = useState('');
-  const [genResult, setGenResult] = useState<any>(null);
+  // const [showRegexGenerator, setShowRegexGenerator] = useState(false);
+  // const [genFilename, setGenFilename] = useState('');
+  // const [genNum, setGenNum] = useState('');
+  // const [genTitle, setGenTitle] = useState('');
+  // const [genResult, setGenResult] = useState<any>(null);
 
+  /*
   const handleGenerateRegex = async () => {
     if (!genFilename || !genNum || !genTitle) return;
     try {
@@ -88,6 +89,7 @@ const BookDetailPage: React.FC = () => {
       setGenResult(null);
     }
   };
+  */
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
   const [isOverflowing, setIsOverflowing] = useState(false);
   const [activeTab, setActiveTab] = useState<'main' | 'extra'>('main');
@@ -365,9 +367,10 @@ const BookDetailPage: React.FC = () => {
         dataToSave.themeColor = undefined; // Will be handled by COALESCE or we can pass null
       }
       
-      const payload: any = { ...dataToSave };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const payload: Record<string, any> = { ...dataToSave };
       await apiClient.patch(`/api/books/${id}`, payload);
-
+      
       // If chapterRegex changed, trigger a re-scan of this book
       if (payload.chapterRegex && book?.libraryId) {
           apiClient.post(`/api/libraries/${book.libraryId}/scan`);

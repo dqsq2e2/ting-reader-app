@@ -10,7 +10,6 @@ import {
   SkipBack, 
   SkipForward, 
   ChevronUp,
-  ChevronLeft,
   Maximize2,
   Clock,
   Settings,
@@ -20,9 +19,7 @@ import {
   ArrowLeft,
   ListMusic,
   X,
-  Check,
-  Download,
-  Loader2
+  Check
 } from 'lucide-react';
 import { getCoverUrl } from '../utils/image';
 import { toSolidColor } from '../utils/color';
@@ -1217,15 +1214,6 @@ const Player: React.FC = () => {
       return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
     }
     return `${m}:${s.toString().padStart(2, '0')}`;
-  };
-
-  const getChapterProgressText = (chapter: Chapter) => {
-    if (!chapter.progressPosition || !chapter.duration) return null;
-    
-    const percent = Math.floor((chapter.progressPosition / chapter.duration) * 100);
-    if (percent === 0) return null;
-    if (percent >= 95) return '已播完';
-    return `已播${percent}%`;
   };
 
   const hiddenPaths = ['/admin', '/settings'];

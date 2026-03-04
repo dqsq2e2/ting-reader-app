@@ -254,9 +254,12 @@ export async function downloadToCache(url: string, fileName: string): Promise<st
                     });
                     
                     offset += CHUNK_SIZE;
-                } catch (e: any) {
+                } catch (e: unknown) {
                      // Check if it's a "Range Not Satisfiable" or similar end-of-stream error
-                     if (e.message?.includes('416') || e.status === 416) {
+                     const msg = (e as Error)?.message || '';
+                     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                     const status = (e as any)?.status;
+                     if (msg.includes('416') || status === 416) {
                          console.warn('Range not satisfiable, assuming download complete');
                          break;
                      }
