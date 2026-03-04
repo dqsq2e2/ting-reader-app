@@ -311,6 +311,7 @@ class FilesystemPlugin : Plugin() {
     }
 
     @PermissionCallback
+    @Suppress("DEPRECATION")
     private fun permissionCallback(call: PluginCall) {
         if (!isStoragePermissionGranted(true)) {
             Logger.debug(logTag, "User denied storage permission")

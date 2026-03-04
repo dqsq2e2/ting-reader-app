@@ -57,3 +57,24 @@ patches.forEach(patch => {
 });
 
 console.log(`Native patch application complete. (${successCount}/${patches.length} files patched)`);
+
+// Remove flatDir from capacitor-cordova-android-plugins/build.gradle if it exists
+const pluginsGradlePath = path.resolve(__dirname, '..', 'android/capacitor-cordova-android-plugins/build.gradle');
+if (fs.existsSync(pluginsGradlePath)) {
+  try {
+    let content = fs.readFileSync(pluginsGradlePath, 'utf8');
+    const flatDirPattern = /flatDir\s*\{\s*dirs\s+'src\/main\/libs',\s*'libs'\s*\}/g;
+    
+    if (flatDirPattern.test(content)) {
+      content = content.replace(flatDirPattern, '// flatDir { dirs ... } removed by patch');
+      fs.writeFileSync(pluginsGradlePath, content, 'utf8');
+      console.log('✅ Removed flatDir from capacitor-cordova-android-plugins/build.gradle');
+    } else {
+      console.log('ℹ️  flatDir already removed or not found in capacitor-cordova-android-plugins/build.gradle');
+    }
+  } catch (err) {
+    console.error('❌ Error modifying capacitor-cordova-android-plugins/build.gradle:', err);
+  }
+} else {
+    console.warn('⚠️  capacitor-cordova-android-plugins/build.gradle not found (run npx cap sync first)');
+}
