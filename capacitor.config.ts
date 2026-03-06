@@ -5,7 +5,7 @@ const config: CapacitorConfig = {
   appName: 'Ting Reader',
   webDir: 'dist',
   server: {
-    androidScheme: 'https',
+    androidScheme: 'http',
     allowNavigation: [
       '*'
     ]

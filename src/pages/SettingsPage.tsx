@@ -56,6 +56,7 @@ const SettingsPage: React.FC = () => {
   const [saved, setSaved] = useState(false);
   const [accountSaved, setAccountSaved] = useState(false);
   const [widgetEmbedType, setWidgetEmbedType] = useState<'private' | 'public'>('private');
+  const [backendVersion, setBackendVersion] = useState<string>('');
   
   // Cache stats for Electron
   const [cacheSize, setCacheSize] = useState<number | null>(null);
@@ -109,6 +110,11 @@ const SettingsPage: React.FC = () => {
 
   useEffect(() => {
     fetchSettings();
+    apiClient.get('/api/health').then(res => {
+      if (res.data && res.data.version) {
+        setBackendVersion(res.data.version);
+      }
+    }).catch(console.error);
     if (isElectron) {
       updateCacheStats();
     }
@@ -595,6 +601,7 @@ const SettingsPage: React.FC = () => {
       </div>
 
       <div className="text-center text-slate-400 text-sm py-8">
+        {backendVersion && <p className="mb-2 text-xs opacity-60">服务端版本 v{backendVersion}</p>}
         <p>©2026 Ting Reader.保留所有权利。</p>
       </div>
     </div>

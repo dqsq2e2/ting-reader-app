@@ -6,6 +6,7 @@ import LoginPage from './pages/LoginPage';
 import HomePage from './pages/HomePage';
 import BookshelfPage from './pages/BookshelfPage';
 import BookDetailPage from './pages/BookDetailPage';
+import SeriesDetailPage from './pages/SeriesDetailPage';
 import SearchPage from './pages/SearchPage';
 import FavoritesPage from './pages/FavoritesPage';
 import AdminLibraries from './pages/AdminLibraries';
@@ -148,6 +149,7 @@ function App() {
             <Route index element={<HomePage />} />
             <Route path="bookshelf" element={<BookshelfPage />} />
             <Route path="book/:id" element={<BookDetailPage />} />
+            <Route path="series/:id" element={<SeriesDetailPage />} />
             <Route path="search" element={<SearchPage />} />
             <Route path="favorites" element={<FavoritesPage />} />
             <Route path="settings" element={<SettingsPage />} />
