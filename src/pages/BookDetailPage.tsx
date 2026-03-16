@@ -174,11 +174,6 @@ const BookDetailPage: React.FC = () => {
     const targetChapter = resumeChapter || chapters[0];
     if (!targetChapter) return;
 
-    playBook(book!, chapters, targetChapter);
-
-    // Scroll logic
-    setHighlightedChapterId(targetChapter.id);
-
     // Determine if target chapter is in main or extra
     const inMain = mainChapters.find(c => c.id === targetChapter.id);
     const inExtra = extraChapters.find(c => c.id === targetChapter.id);
@@ -193,6 +188,11 @@ const BookDetailPage: React.FC = () => {
       nextTab = 'extra';
       targetList = extraChapters;
     }
+
+    playBook(book!, targetList, targetChapter.id);
+
+    // Scroll logic
+    setHighlightedChapterId(targetChapter.id);
 
     // Calculate group index
     const index = targetList.findIndex(c => c.id === targetChapter.id);
@@ -687,7 +687,7 @@ const BookDetailPage: React.FC = () => {
                 <div 
                   className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1 cursor-pointer"
                   onClick={() => {
-                      playChapter(book!, chapters, chapter);
+                      playChapter(book!, currentChapters, chapter);
                   }}
                 >
                   <div 
@@ -740,7 +740,7 @@ const BookDetailPage: React.FC = () => {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        playChapter(book!, chapters, chapter);
+                        playChapter(book!, currentChapters, chapter);
                       }}
                       className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-slate-50 dark:bg-slate-800 items-center justify-center transition-all hover:scale-105 ${
                         isActive 

@@ -222,7 +222,7 @@ const ChapterList: React.FC<ChapterListProps> = React.memo(({
               <div 
                 className="flex items-center gap-4 min-w-0 flex-1 cursor-pointer"
                 onClick={() => {
-                  onPlayChapter(currentBook!, chapters, chapter);
+                  onPlayChapter(currentBook!, currentList, chapter);
                   onClose();
                 }}
               >
