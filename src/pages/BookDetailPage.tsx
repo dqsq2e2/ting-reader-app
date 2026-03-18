@@ -110,6 +110,9 @@ const BookDetailPage: React.FC = () => {
   const hasInitialScrolled = useRef(false);
   const [highlightedChapterId, setHighlightedChapterId] = useState<string | null>(null);
 
+  // User Settings
+  const [coverShape, setCoverShape] = useState<'rect' | 'square'>('rect');
+
   // Reset scroll state when book ID changes
   useEffect(() => {
     hasInitialScrolled.current = false;
@@ -246,9 +249,10 @@ const BookDetailPage: React.FC = () => {
     const fetchBookDetails = async () => {
       try {
         setLoading(true);
-        const [bookRes, chaptersRes] = await Promise.all([
+        const [bookRes, chaptersRes, settingsRes] = await Promise.all([
           apiClient.get(`/api/books/${id}`),
-          apiClient.get(`/api/books/${id}/chapters`)
+          apiClient.get(`/api/books/${id}/chapters`),
+          apiClient.get('/api/settings')
         ]);
         const fetchedBook = bookRes.data;
         setBook(fetchedBook);
@@ -258,6 +262,12 @@ const BookDetailPage: React.FC = () => {
         setChapters(chaptersRes.data);
         setIsFavorite(bookRes.data.isFavorite);
         setCurrentGroupIndex(0); // Reset group index when book changes
+        
+        // Load user settings
+        const settings = settingsRes.data.settingsJson || {};
+        if (settings.bookshelfCoverShape) {
+          setCoverShape(settings.bookshelfCoverShape);
+        }
       } catch (err) {
         console.error('Failed to fetch book details', err);
       } finally {
@@ -417,9 +427,9 @@ const BookDetailPage: React.FC = () => {
         </button>
 
         {/* Book Info Section */}
-        <div className="flex flex-col md:flex-row gap-6 md:gap-8">
+        <div className={`flex flex-col md:flex-row gap-6 md:gap-8 ${coverShape === 'square' ? 'md:items-center' : ''}`}>
           <div className="w-48 md:w-72 mx-auto md:mx-0 shrink-0">
-            <div className="aspect-[3/4] rounded-3xl overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800">
+            <div className={`${coverShape === 'square' ? 'aspect-square' : 'aspect-[3/4]'} rounded-3xl overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800`}>
               <img 
                 src={getCoverUrl(book.coverUrl, book.libraryId, book.id)} 
                 alt={book.title}

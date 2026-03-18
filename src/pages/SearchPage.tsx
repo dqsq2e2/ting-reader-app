@@ -11,6 +11,7 @@ const SearchPage: React.FC = () => {
   // Filter states
   const [selectedLibraryId, setSelectedLibraryId] = useState<string>('');
   const [selectedTag, setSelectedTag] = useState<string>('');
+  const [selectedGenre, setSelectedGenre] = useState<string>('');
   const [selectedAuthor, setSelectedAuthor] = useState<string>('');
   const [selectedNarrator, setSelectedNarrator] = useState<string>('');
   const [showFilters, setShowFilters] = useState(false);
@@ -18,6 +19,7 @@ const SearchPage: React.FC = () => {
   // Data options
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
+  const [allGenres, setAllGenres] = useState<string[]>([]);
   const [allAuthors, setAllAuthors] = useState<string[]>([]);
   const [allNarrators, setAllNarrators] = useState<string[]>([]);
   
@@ -30,6 +32,7 @@ const SearchPage: React.FC = () => {
   const filterRowRefs = {
     libraries: useRef<HTMLDivElement>(null),
     tags: useRef<HTMLDivElement>(null),
+    genres: useRef<HTMLDivElement>(null),
     authors: useRef<HTMLDivElement>(null),
     narrators: useRef<HTMLDivElement>(null),
   };
@@ -68,14 +71,22 @@ const SearchPage: React.FC = () => {
         const books = booksRes.data as Book[];
         const authors = new Set<string>();
         const narrators = new Set<string>();
+        const genres = new Set<string>();
         
         books.forEach(book => {
           if (book.author) authors.add(book.author);
           if (book.narrator) narrators.add(book.narrator);
+          if (book.genre) {
+            book.genre.split(',').forEach(g => {
+              const trimmed = g.trim();
+              if (trimmed) genres.add(trimmed);
+            });
+          }
         });
         
         setAllAuthors(Array.from(authors).sort());
         setAllNarrators(Array.from(narrators).sort());
+        setAllGenres(Array.from(genres).sort());
         
       } catch (err) {
         console.error('Failed to fetch metadata', err);
@@ -87,7 +98,7 @@ const SearchPage: React.FC = () => {
   useEffect(() => {
     const searchBooks = async () => {
       // If no filters are active, clear results
-      if (!debouncedQuery.trim() && !selectedTag && !selectedAuthor && !selectedNarrator && !selectedLibraryId) {
+      if (!debouncedQuery.trim() && !selectedTag && !selectedGenre && !selectedAuthor && !selectedNarrator && !selectedLibraryId) {
         setResults([]);
         return;
       }
@@ -110,6 +121,10 @@ const SearchPage: React.FC = () => {
         if (selectedNarrator) {
           filtered = filtered.filter(b => b.narrator === selectedNarrator);
         }
+
+        if (selectedGenre) {
+          filtered = filtered.filter(b => b.genre && b.genre.split(',').map(g => g.trim()).includes(selectedGenre));
+        }
         
         setResults(filtered);
       } catch (err) {
@@ -120,7 +135,7 @@ const SearchPage: React.FC = () => {
     };
 
     searchBooks();
-  }, [debouncedQuery, selectedTag, selectedAuthor, selectedNarrator, selectedLibraryId]);
+  }, [debouncedQuery, selectedTag, selectedGenre, selectedAuthor, selectedNarrator, selectedLibraryId]);
 
   // Filter Row Component
   const FilterRow = ({ 
@@ -219,7 +234,7 @@ const SearchPage: React.FC = () => {
     );
   };
 
-  const hasActiveFilters = selectedLibraryId || selectedTag || selectedAuthor || selectedNarrator;
+  const hasActiveFilters = selectedLibraryId || selectedTag || selectedGenre || selectedAuthor || selectedNarrator;
 
   return (
     <div className="w-full max-w-screen-2xl mx-auto p-4 sm:p-6 md:p-8 lg:p-10 space-y-6">
@@ -288,6 +303,13 @@ const SearchPage: React.FC = () => {
                 selected={selectedTag} 
                 onSelect={setSelectedTag} 
                 scrollRef={filterRowRefs.tags}
+              />
+              <FilterRow 
+                label="流派" 
+                items={allGenres} 
+                selected={selectedGenre} 
+                onSelect={setSelectedGenre} 
+                scrollRef={filterRowRefs.genres}
               />
               <FilterRow 
                 label="作者" 
