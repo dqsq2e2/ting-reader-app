@@ -15,6 +15,9 @@ interface BookCardProps {
 }
 
 const BookCard: React.FC<BookCardProps> = ({ book, onClick, disableLink, coverShape = 'rect' }) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const libraryId = book.libraryId || (book as any).library_id;
+  
   const content = (
     <>
       <div className={`relative ${coverShape === 'square' ? 'aspect-square' : 'aspect-[3/4]'} overflow-hidden rounded-md shadow-md bg-white dark:bg-slate-800`}>
