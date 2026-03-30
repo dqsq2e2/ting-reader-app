@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAuthStore } from '../store/authStore';
+import { usePlayerStore } from '../store/playerStore';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { SplashScreen } from '@capacitor/splash-screen';
@@ -40,6 +41,14 @@ const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
     if (isApp) {
       // Notification permission for media controls
       LocalNotifications.requestPermissions().catch(console.error);
+      
+      // Initialize Audio Focus setting
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { Capacitor } = window as any;
+      if (Capacitor && Capacitor.isPluginAvailable('AudioConfig')) {
+        const { ignoreAudioFocus } = usePlayerStore.getState();
+        Capacitor.Plugins.AudioConfig.setIgnoreAudioFocus({ ignore: !!ignoreAudioFocus });
+      }
     }
 
     // Make status bar transparent on Android for edge-to-edge

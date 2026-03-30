@@ -1,14 +1,17 @@
-import { Capacitor } from '@capacitor/core';
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { usePlayerStore } from '../store/playerStore';
 import { useAuthStore } from '../store/authStore';
 import apiClient from '../api/client';
+import { FastAverageColor } from 'fast-average-color';
 import { 
   Play, 
   Pause, 
   SkipBack, 
   SkipForward, 
+  Volume2, 
+  VolumeX, 
+  // FastForward, 
   ChevronUp,
   ChevronLeft,
   Maximize2,
@@ -20,48 +23,11 @@ import {
   ArrowLeft,
   ListMusic,
   X,
-  Check,
-  Volume2,
-  VolumeX
+  Check
 } from 'lucide-react';
 import { getCoverUrl } from '../utils/image';
-import { toSolidColor, isLight } from '../utils/color';
+import { setAlpha, toSolidColor, isLight, isTooLight } from '../utils/color';
 import { CapacitorMusicControls as MusicControls } from 'capacitor-music-controls-plugin';
-import type { Chapter } from '../types';
-
-import ChapterList from './ChapterList';
-
-type MediaError = {
-  code?: number;
-  message?: string;
-};
-
-type MediaInstance = {
-  play: () => void;
-  pause: () => void;
-  stop: () => void;
-  release: () => void;
-  getDuration: () => number;
-  getCurrentPosition: (success: (position: number) => void, error?: (err: MediaError) => void) => void;
-  seekTo: (positionMs: number) => void;
-  setVolume?: (volume: number) => void;
-  setRate?: (rate: number) => void;
-  _status?: number;
-  _resumeTime?: number;
-  _initialSeekDone?: boolean;
-};
-
-type MediaConstructor = new (
-  src: string,
-  success: () => void,
-  error: (err: MediaError) => void,
-  status: (status: number) => void
-) => MediaInstance;
-
-type WindowWithMedia = {
-  Media?: MediaConstructor;
-  electronAPI?: unknown;
-};
 
 interface ProgressBarProps {
   isMini?: boolean;
@@ -77,38 +43,32 @@ interface ProgressBarProps {
 }
 
 const ProgressBar: React.FC<ProgressBarProps> = ({ 
-  isMini = false, 
-  isSeeking, 
-  seekTime, 
-  currentTime, 
-  duration, 
-  bufferedTime, 
-  themeColor, 
-  onSeek, 
-  onSeekStart, 
-  onSeekEnd 
+  isMini = false,
+  isSeeking,
+  seekTime,
+  currentTime,
+  duration,
+  bufferedTime,
+  themeColor,
+  onSeek,
+  onSeekStart,
+  onSeekEnd
 }) => {
   const displayTime = isSeeking ? seekTime : currentTime;
-  const playedPercent = (displayTime / (duration || 1)) * 100;
-  const bufferedPercent = (bufferedTime / (duration || 1)) * 100;
+  const playedPercent = (Number.isFinite(duration) && duration > 0) ? (displayTime / duration) * 100 : 0;
+  const bufferedPercent = (Number.isFinite(duration) && duration > 0) ? (bufferedTime / duration) * 100 : 0;
   
-  // Safety check for themeColor
-  const safeThemeColor = themeColor || 'rgba(0,0,0,0.15)';
-  const isDarkMode = document.documentElement.classList.contains('dark');
-  const barColor = isDarkMode 
-    ? safeThemeColor.replace('0.15', '1.0').replace('0.1', '1.0') 
-    : safeThemeColor.replace('0.15', '1.0').replace('0.1', '1.0');
+  // Filter out light colors
+  const effectiveThemeColor = themeColor && !isTooLight(themeColor) ? themeColor : undefined;
 
+  const barColor = effectiveThemeColor ? toSolidColor(effectiveThemeColor) : undefined;
+  const shadowColor = effectiveThemeColor ? setAlpha(effectiveThemeColor, 0.4) : undefined;
+  
   return (
-    <div 
-      className={`relative group/progress ${isMini ? 'flex-1 h-3 sm:h-2' : 'w-full h-4'} flex items-center select-none touch-none`}
-    >
+    <div className={`relative group/progress ${isMini ? 'flex-1 w-full h-3 sm:h-2' : 'w-full h-4'} flex items-center select-none touch-none`}>
       {/* Track Background */}
       <div 
         className={`absolute left-0 right-0 top-1/2 -translate-y-1/2 ${isMini ? 'h-1' : 'h-1.5'} bg-slate-300 dark:bg-slate-900 rounded-full overflow-hidden`}
-        style={{
-          backgroundColor: themeColor ? (isMini ? themeColor.replace('0.15', '0.1').replace('0.1', '0.1') : 'rgba(0,0,0,0.2)') : undefined
-        }}
       >
         {/* Buffered Bar */}
         <div 
@@ -117,11 +77,11 @@ const ProgressBar: React.FC<ProgressBarProps> = ({
         />
         {/* Played Bar */}
         <div 
-          className="absolute inset-y-0 left-0 z-10" 
+          className={`absolute inset-y-0 left-0 z-10 ${!barColor ? 'bg-primary-600' : ''}`}
           style={{ 
             width: `${playedPercent}%`,
             backgroundColor: barColor,
-            boxShadow: `0 0 10px ${safeThemeColor.replace('0.15', '0.4').replace('0.1', '0.4')}`
+            boxShadow: shadowColor ? `0 0 10px ${shadowColor}` : undefined
           }}
         />
       </div>
@@ -141,7 +101,7 @@ const ProgressBar: React.FC<ProgressBarProps> = ({
       <input 
         type="range" 
         min="0" 
-        max={duration || 0} 
+        max={Number.isFinite(duration) ? duration : 0} 
         step="any"
         value={displayTime} 
         onInput={onSeek}
@@ -161,6 +121,32 @@ const ProgressBar: React.FC<ProgressBarProps> = ({
 };
 
 const Player: React.FC = () => {
+  const { token, activeUrl } = useAuthStore();
+  const API_BASE_URL = activeUrl || import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? '' : 'http://localhost:3000');
+  
+  const getStreamUrl = (chapterId: string) => {
+    let url = '';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if ((window as any).electronAPI) {
+      // Electron mode: use custom protocol for caching
+      const remote = encodeURIComponent(API_BASE_URL);
+      url = `ting://stream/${chapterId}?token=${token}&remote=${remote}`;
+    } else {
+      url = `${API_BASE_URL}/api/stream/${chapterId}?token=${token}`;
+    }
+    
+    if (shouldTranscode) {
+      url += '&transcode=mp3';
+    }
+    
+    // Add retry count to force URL refresh even if shouldTranscode didn't change (e.g. network retry)
+    if (retryCount > 0) {
+        url += `&retry=${retryCount}`;
+    }
+    
+    return url;
+  };
+
   const { 
     currentBook, 
     currentChapter, 
@@ -175,6 +161,7 @@ const Player: React.FC = () => {
     playbackSpeed,
     setPlaybackSpeed,
     volume,
+    setVolume,
     themeColor,
     setThemeColor,
     playChapter,
@@ -186,413 +173,94 @@ const Player: React.FC = () => {
     isSeriesEditing
   } = usePlayerStore();
 
-  const { token, activeUrl, serverUrl } = useAuthStore();
-  const API_BASE_URL = activeUrl || serverUrl || import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? '' : 'http://localhost:3000');
-  
-  const coverUrl = getCoverUrl(currentBook?.coverUrl, currentBook?.libraryId, currentBook?.id);
-
-  const [retryCount, setRetryCount] = useState(0);
-  const [shouldTranscode, setShouldTranscode] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const streamOffsetRef = useRef(0);
-  const initMediaRef = useRef<(url: string) => void>(() => {});
-
-  const handleEnded = useCallback(() => {
-    console.log('Player: Chapter ended, triggering next chapter');
-    if (currentBook && currentChapter && token) {
-      // Use ref for duration to avoid dependency
-      const finalDuration = durationRef.current || duration;
-      apiClient.post('/api/progress', {
-        bookId: currentBook.id,
-        chapterId: currentChapter.id,
-        position: Math.floor(finalDuration)
-      }).catch(err => console.error('Failed to sync final progress', err));
-    }
-    nextChapter();
-  }, [currentBook, currentChapter, token, duration, nextChapter]);
-
-  const getStreamUrl = useCallback((chapterId: string, seekTime?: number) => {
-    let url = `${API_BASE_URL}/api/stream/${chapterId}?token=${token}`;
-    if (shouldTranscode) {
-      url += '&transcode=mp3';
-      if (seekTime && seekTime > 0) {
-          url += `&seek=${seekTime}`;
-      }
-    }
-    return url;
-  }, [API_BASE_URL, shouldTranscode, token]);
-
-  // Helper to init media
-  const initMedia = useCallback((url: string) => {
-      // Keep reference to old media to release it AFTER creating new one
-      // This prevents a gap where no media is active, which can cause Android to kill the background service
-      const oldMedia = mediaRef.current;
-      
-      // Detach old media from ref immediately to prevent stale callbacks affecting UI
-      // The callbacks check if (mediaRef.current !== media), so setting this ensures they bail out
-      if (mediaRef.current) {
-          mediaRef.current = null;
-      }
-      
-      // Stop timer
-      if (mediaTimerRef.current) {
-          clearInterval(mediaTimerRef.current);
-          mediaTimerRef.current = null;
-      }
-
-      console.log('Initializing Native Media:', url);
-      
-      // Check if Media is available (Cordova plugin)
-      const mediaCtor = (window as WindowWithMedia).Media;
-      if (!mediaCtor) {
-          console.error('Cordova Media plugin not found!');
-          if (oldMedia) oldMedia.release();
-          return;
-      }
-      
-      const finalUrl = url;
-      console.log('Initializing Native Media (Final):', finalUrl);
-
-      // Create new Media
-      // new Media(src, mediaSuccess, mediaError, mediaStatus)
-      const media = new mediaCtor(
-          finalUrl,
-          () => {
-              console.log('Media Success (End of playback)');
-              // Prevent stale callbacks triggering next chapter
-              // If the current media ref has changed or is null, ignore this callback
-              if (!mediaRef.current || mediaRef.current !== media) {
-                  console.log('Ignoring stale media success callback');
-                  return;
-              }
-              handleEnded();
-          },
-          (err) => {
-              console.error('Media Error', err);
-              
-              // Prevent stale callbacks
-              if (!mediaRef.current || mediaRef.current !== media) {
-                  console.log('Ignoring stale media error callback');
-                  return;
-              }
-
-              // Check for Aborted (1), Decode error (3), not supported (4), or Android specific errors (-38, etc)
-              // -38 is often a state error, but can happen with unsupported formats
-              // -2147483648 is a generic error, often related to seek race conditions
-              const errorCode = err?.code;
-              const shouldRetry = errorCode === 1 || errorCode === 3 || errorCode === 4 || (typeof errorCode === 'number' && errorCode < 0);
-
-              // Special handling for the seek error to auto-recover without restart
-              if (errorCode === -2147483648) {
-                  console.warn('Caught generic media error (likely seek race condition), attempting to recover...');
-                  // Re-init media at current position
-                  const currentPos = usePlayerStore.getState().currentTime;
-                  const currentId = usePlayerStore.getState().currentChapter?.id;
-                  if (currentId) {
-                      // Small delay to let the error settle
-                      setTimeout(() => {
-                          const url = getStreamUrl(currentId, currentPos);
-                          initMediaRef.current(url);
-                      }, 500);
-                  }
-                  return;
-              }
-
-              if (shouldRetry && retryCount < 3) {
-                   console.log(`Playback error ${errorCode}, retrying with transcode (${retryCount + 1}/3)...`);
-                   setShouldTranscode(true);
-                   isInitialLoadRef.current = true;
-                   setRetryCount(prev => prev + 1);
-                   return;
-              }
-
-              if (errorCode !== 0) {
-                  setError(`播放出错: ${err?.message || err?.code || JSON.stringify(err)}`);
-              }
-          },
-          (status: number) => {
-              console.log('Media Status:', status);
-
-              if (mediaRef.current !== media) {
-                  console.log('Ignoring stale media status callback');
-                  return;
-              }
-
-              if (mediaRef.current) {
-                  mediaRef.current._status = status;
-              }
-              
-              if (status === 2) { // Running
-                  setIsPlaying(true);
-                  
-                  // Apply playback speed
-                  // Note: Use 'media' instance directly, not ref
-                  const applyRate = () => {
-                      const speed = usePlayerStore.getState().playbackSpeed;
-                      const vol = usePlayerStore.getState().volume;
-                      if (typeof media.setRate === 'function') {
-                          console.log('Setting playback rate to:', speed);
-                          media.setRate(speed);
-                      }
-                      if (typeof media.setVolume === 'function') {
-                          console.log('Setting playback volume to:', vol);
-                          media.setVolume(vol);
-                      }
-                  };
-
-                  applyRate();
-                  // Re-apply after a short delay to ensure it sticks (Android issue)
-                  setTimeout(applyRate, 300);
-                  setTimeout(applyRate, 1000); // Try again a bit later
-
-                  if (media._resumeTime && media._resumeTime > 0 && !media._initialSeekDone) {
-                      console.log(`Performing initial seek to ${media._resumeTime}s`);
-                      media.seekTo(media._resumeTime * 1000);
-                  }
-
-                  MusicControls.updateIsPlaying({
-                      isPlaying: true,
-                      elapsed: usePlayerStore.getState().currentTime
-                  });
-              } else if (status === 3 || status === 4) { // Paused or Stopped
-                  setIsPlaying(false);
-                  
-                  MusicControls.updateIsPlaying({
-                      isPlaying: false,
-                      elapsed: usePlayerStore.getState().currentTime
-                  });
-              }
-          }
-      );
-      
-      media._status = 0;
-      
-      let resumeTime = usePlayerStore.getState().currentTime;
-      const currentCh = usePlayerStore.getState().currentChapter;
-      
-      // If progress is very close to the end (e.g., within 2 seconds or > 99%), start from the beginning
-      if (currentCh && currentCh.duration && currentCh.duration > 0) {
-          if (currentCh.duration - resumeTime < 2 || resumeTime / currentCh.duration > 0.99) {
-              console.log(`Chapter ${currentCh.title} was already finished, starting from beginning`);
-              resumeTime = 0;
-              setCurrentTime(0);
-          }
-      }
-      
-      // Fix for transcoding/server-side seek:
-      // If the URL contains 'seek=', the server is already returning a stream starting at that position.
-      // The client should NOT attempt to seek, as the stream start (0) corresponds to the seek time.
-      if (url.includes('seek=')) {
-          console.log('Server-side seek detected, disabling client-side initial seek');
-          resumeTime = 0;
-      }
-      
-      media._resumeTime = resumeTime;
-      media._initialSeekDone = resumeTime <= 0;
-
-      // Assign new media to ref
-      mediaRef.current = media;
-      
-      // Play immediately
-      if (usePlayerStore.getState().isPlaying) {
-          media.play();
-      }
-
-      // Now it is safe to release the old media
-      if (oldMedia) {
-          console.log('Releasing old media instance');
-          oldMedia.release();
-      }
-      
-      mediaTimerRef.current = setInterval(() => {
-          if (mediaRef.current) {
-              mediaRef.current.getCurrentPosition(
-                  (position: number) => {
-                      if (position > -1) {
-                          if (mediaRef.current?._resumeTime && mediaRef.current._resumeTime > 0 && !mediaRef.current._initialSeekDone) {
-                              if (Math.abs(position - mediaRef.current._resumeTime) < 2) {
-                                  mediaRef.current._initialSeekDone = true;
-                              } else {
-                                  return;
-                              }
-                          }
-
-                          if (isSeekingRef.current) return;
-
-                          const realPosition = position + streamOffsetRef.current;
-                          setCurrentTime(realPosition);
-                          
-                          // Use ref for duration to avoid dependency loop
-                          const d = mediaRef.current?.getDuration() || 0;
-                          if (d > 0 && d !== durationRef.current && !shouldTranscode) {
-                              setDuration(d);
-                          }
-
-                          MusicControls.updateElapsed({
-                              elapsed: realPosition,
-                              isPlaying: usePlayerStore.getState().isPlaying
-                          });
-                      }
-                  },
-                  () => {}
-              );
-          }
-      }, 1000);
-  }, [retryCount, shouldTranscode, handleEnded, setIsPlaying, setCurrentTime, setDuration, setError, getStreamUrl]);
-
-  useEffect(() => {
-      initMediaRef.current = initMedia;
-  }, [initMedia]);
-
-  useEffect(() => {
-    if (!currentChapter) return;
-    if (typeof (window as WindowWithMedia).electronAPI !== 'undefined') return;
-
-    let isMounted = true;
-    const chapterId = currentChapter.id;
-    
-    const loadAndPlay = async () => {
-        if (!API_BASE_URL || !/^https?:\/\//i.test(API_BASE_URL)) {
-            setError('服务器地址无效，请重新登录后重试');
-            return;
-        }
-
-        // Build URL manually to avoid dependency on getStreamUrl
-        let url = `${API_BASE_URL}/api/stream/${chapterId}?token=${token}`;
-        if (shouldTranscode) {
-          url += '&transcode=mp3';
-          // Initial seek handled by initMedia resumeTime logic or seek param
-        }
-        
-        if (!isMounted) return;
-        // Ensure we are still on the same chapter
-        if (currentChapter.id !== chapterId) return;
-
-        if (shouldTranscode && isInitialLoadRef.current && currentChapter.id === chapterId) {
-                let resumeTime = usePlayerStore.getState().currentTime;
-                // If progress is very close to the end, start from the beginning
-                if (currentChapter && currentChapter.duration && currentChapter.duration > 0) {
-                    if (currentChapter.duration - resumeTime < 2 || resumeTime / currentChapter.duration > 0.99) {
-                        console.log(`Chapter ${currentChapter.title} was already finished, starting from beginning`);
-                        resumeTime = 0;
-                        setCurrentTime(0);
-                    }
-                }
-
-                if (resumeTime > 0) {
-                    console.log(`Resuming transcode stream from ${resumeTime}s`);
-                    streamOffsetRef.current = resumeTime;
-                    url += `&seek=${resumeTime}`;
-                } else {
-                    streamOffsetRef.current = 0;
-                }
-        } else {
-                streamOffsetRef.current = 0;
-        }
-
-        initMedia(url);
-    };
-
-    loadAndPlay();
-
-    return () => {
-        isMounted = false;
-        // Do not release media here to avoid killing background service during chapter transition
-        // Media will be released in initMedia or when component unmounts
-        if (mediaTimerRef.current) {
-            clearInterval(mediaTimerRef.current);
-        }
-    };
-    // Include all dependencies to satisfy linter
-  }, [currentChapter, retryCount, shouldTranscode, API_BASE_URL, token, initMedia, setCurrentTime]);
-
-  // Cleanup media on unmount only
-  useEffect(() => {
-      return () => {
-          if (mediaRef.current) {
-              console.log('Component unmounting, releasing media');
-              mediaRef.current.release();
-              mediaRef.current = null;
-          }
-      };
-  }, []);
-
-  const audioRef = useRef<HTMLAudioElement>(null); // Keep for Electron fallback? No, let's remove usage for App.
-  const isSeekingRef = useRef(false);
-
+  const audioRef = useRef<HTMLAudioElement>(null);
   const location = useLocation();
-  // const [isExpanded, setIsExpanded] = useState(false); // Moved to store
+  const [isMuted, setIsMuted] = useState(false);
   const [showChapters, setShowChapters] = useState(false);
   const [showSleepTimer, setShowSleepTimer] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
   const [showVolumeControl, setShowVolumeControl] = useState(false);
-  const volumeControlRef = useRef<HTMLDivElement>(null);
-  
-  // Ref for Native Media
-  const mediaRef = useRef<MediaInstance | null>(null);
-  const mediaTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const seekTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const [showSettings, setShowSettings] = useState(false);
   const [currentGroupIndex, setCurrentGroupIndex] = useState(0);
   const [activeTab, setActiveTab] = useState<'main' | 'extra'>('main');
-  // scrollRef moved to ChapterList
-  
-  const [chapters, setChapters] = useState<Chapter[]>([]);
-  const { extraChapters } = React.useMemo(() => {
-    const main: Chapter[] = [];
-    const extra: Chapter[] = [];
-    chapters.forEach(c => {
-        const isExtra = !!c.isExtra || /番外|SP|Extra/i.test(c.title);
-        if (isExtra) extra.push(c);
-        else main.push(c);
-    });
-    return { mainChapters: main, extraChapters: extra };
-  }, [chapters]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const volumeControlRef = useRef<HTMLDivElement>(null);
 
+  const scrollGroups = (direction: 'left' | 'right') => {
+    if (scrollRef.current) {
+      const scrollAmount = 200;
+      scrollRef.current.scrollBy({
+        left: direction === 'left' ? -scrollAmount : scrollAmount,
+        behavior: 'smooth'
+      });
+    }
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [chapters, setChapters] = useState<any[]>([]);
   const [customMinutes, setCustomMinutes] = useState('');
   const [editSkipIntro, setEditSkipIntro] = useState(0);
   const [editSkipOutro, setEditSkipOutro] = useState(0);
-  const currentTimeRef = useRef(0);
-  const isPlayingRef = useRef(isPlaying);
-  const durationRef = useRef(duration);
-  const currentBookId = currentBook?.id;
-  const currentBookTitle = currentBook?.title || '';
-  const currentBookCoverUrl = currentBook?.coverUrl;
-  const currentBookLibraryId = currentBook?.libraryId;
-  const currentChapterId = currentChapter?.id;
-  const currentChapterTitle = currentChapter?.title || '';
+
+  const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
 
   useEffect(() => {
-    currentTimeRef.current = currentTime;
-    isPlayingRef.current = isPlaying;
-    // eslint-disable-next-line react-hooks/immutability
-    durationRef.current = duration;
-  }, [currentTime, isPlaying, duration]);
+    const observer = new MutationObserver(() => {
+      setIsDark(document.documentElement.classList.contains('dark'));
+    });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    return () => observer.disconnect();
+  }, []);
+
+  const effectiveThemeColor = themeColor && !isTooLight(themeColor) ? themeColor : undefined;
+  // Always use the theme color for the mini player progress bar, even in dark mode
+  const miniPlayerThemeColor = effectiveThemeColor;
+  // Determine if we should use dark mode text colors (white/gray) for controls
+  // In dark mode, we always want bright white/gray for contrast
+  const useDarkControls = isDark;
 
   // Use stored theme color from book to avoid flash
   useEffect(() => {
-    if (currentBook?.themeColor) {
-      setThemeColor(currentBook.themeColor);
+    // Prefer camelCase if available, otherwise snake_case
+    const color = currentBook?.themeColor;
+    if (color) {
+      setThemeColor(color);
+    } else if (currentBook?.coverUrl) {
+      // If no theme color but we have a cover, extract it client-side
+      const coverUrl = getCoverUrl(currentBook.coverUrl, currentBook.libraryId, currentBook.id);
+      const fac = new FastAverageColor();
+      fac.getColorAsync(coverUrl, { algorithm: 'dominant' })
+        .then(color => {
+          setThemeColor(color.hex);
+          // Update the store's currentBook locally so it persists in this session and avoids re-extraction
+          usePlayerStore.setState(state => ({
+            currentBook: state.currentBook ? {
+              ...state.currentBook,
+              themeColor: color.hex
+            } : null
+          }));
+        })
+        .catch(e => console.warn('在播放器中从封面提取颜色失败', e));
     }
-  }, [currentBook?.id, currentBook?.themeColor, setThemeColor]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentBook?.id, currentBook?.themeColor]);
 
   useEffect(() => {
-    if (!currentBook) return;
-    const skipIntro = currentBook.skipIntro ?? 0;
-    const skipOutro = currentBook.skipOutro ?? 0;
-    setEditSkipIntro(skipIntro);
-    setEditSkipOutro(skipOutro);
-    localStorage.setItem(`offline_skip_${currentBook.id}`, JSON.stringify({ skip_intro: skipIntro, skip_outro: skipOutro }));
-  }, [currentBook]);
+    if (currentBook) {
+      setTimeout(() => {
+        setEditSkipIntro(currentBook.skipIntro || 0);
+        setEditSkipOutro(currentBook.skipOutro || 0);
+      }, 0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentBook?.id]);
 
   const handleSaveSettings = async () => {
     if (!currentBook) return;
     try {
       await apiClient.patch(`/api/books/${currentBook.id}`, {
-        skip_intro: editSkipIntro,
-        skip_outro: editSkipOutro
+        skipIntro: editSkipIntro,
+        skipOutro: editSkipOutro
       });
+      // Update local store state if necessary, but currentBook is in store
       usePlayerStore.setState(state => ({
         currentBook: state.currentBook ? {
           ...state.currentBook,
@@ -600,53 +268,81 @@ const Player: React.FC = () => {
           skipOutro: editSkipOutro
         } : null
       }));
-      localStorage.setItem(`offline_skip_${currentBook.id}`, JSON.stringify({ skip_intro: editSkipIntro, skip_outro: editSkipOutro }));
       setShowSettings(false);
     } catch (err) {
-      console.error('Failed to save settings', err);
+      console.error('保存设置失败', err);
     }
   };
 
+  const { mainChapters, extraChapters } = React.useMemo(() => {
+    return {
+      mainChapters: chapters.filter(c => !c.isExtra),
+      extraChapters: chapters.filter(c => c.isExtra)
+    };
+  }, [chapters]);
+
+  const currentChapters = activeTab === 'main' ? mainChapters : extraChapters;
+
   const chaptersPerGroup = 100;
-  // groups logic moved to ChapterList
+  const groups = React.useMemo(() => {
+    const g = [];
+    for (let i = 0; i < currentChapters.length; i += chaptersPerGroup) {
+      const slice = currentChapters.slice(i, i + chaptersPerGroup);
+      g.push({
+        start: slice[0]?.chapterIndex || (i + 1),
+        end: slice[slice.length - 1]?.chapterIndex || (i + slice.length),
+        chapters: slice
+      });
+    }
+    return g;
+  }, [currentChapters]);
 
   const [sleepTimer, setSleepTimer] = useState<number | null>(null);
+  const sleepTimerEndTimeRef = useRef<number | null>(null);
   const progressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sleepTimerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerMenuRef = useRef<HTMLDivElement>(null);
 
+  const [error, setError] = useState<string | null>(null);
   const [bufferedTime, setBufferedTime] = useState(0);
   const [autoPreload, setAutoPreload] = useState(false);
-  // const [clientAutoDownload, setClientAutoDownload] = useState(false); // Moved to store
+  const [autoCache, setAutoCache] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+  const [shouldTranscode, setShouldTranscode] = useState(false);
   const isInitialLoadRef = useRef(true);
-  
-  // Fetch settings for auto_preload
+  const preloadAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Fetch settings for auto_preload and user preferences
   useEffect(() => {
-    if (!token) return;
     apiClient.get('/api/settings').then(res => {
-      // Check settingsJson first as these might be stored there
-      const settingsJson = res.data.settingsJson || {};
+      // API returns camelCase
+      setAutoPreload(!!res.data.autoPreload);
+      setAutoCache(!!res.data.autoCache);
       
-      // For autoPreload and autoCache, prefer settingsJson value if present, otherwise fallback to root value
-      // This handles the case where backend returns default values at root but actual user prefs in JSON
-      const ap = settingsJson.autoPreload !== undefined ? settingsJson.autoPreload : 
-                 (settingsJson.auto_preload !== undefined ? settingsJson.auto_preload : 
-                 (res.data.autoPreload !== undefined ? res.data.autoPreload : res.data.auto_preload));
+      // Apply user's default playback speed
+      if (res.data.playbackSpeed) {
+        setPlaybackSpeed(res.data.playbackSpeed);
+      }
       
-      setAutoPreload(!!ap);
-      
-    }).catch(err => console.error('Failed to fetch settings', err));
-  }, [token]);
+      // Apply volume if present in settings (check both root and settings_json)
+      // Note: Volume might be stored in settings_json as it's not a core column
+      const vol = res.data.volume ?? res.data.settingsJson?.volume;
+      if (vol !== undefined) {
+        setVolume(vol);
+      }
+    }).catch(err => console.error('获取设置失败', err));
+  }, [setPlaybackSpeed, setVolume]);
 
   // Fetch chapters for the current book
   useEffect(() => {
-    if (currentBook?.id && token) {
+    if (currentBook?.id) {
       apiClient.get(`/api/books/${currentBook.id}/chapters`).then(res => {
         setChapters(res.data);
         setCurrentGroupIndex(0); // Reset group index when book changes
-      }).catch(err => console.error('Failed to fetch chapters', err));
+      }).catch(err => console.error('获取章节失败', err));
     }
-  }, [currentBook?.id, token]);
-  
+  }, [currentBook?.id]);
+
   // Close timer menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -661,77 +357,77 @@ const Player: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Auto-scroll logic moved to ChapterList
-
   // Reset initial load ref when chapter changes
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/immutability
     isInitialLoadRef.current = true;
-    setBufferedTime(0);
-    setRetryCount(0);
     setShouldTranscode(false);
-    streamOffsetRef.current = 0;
+    setTimeout(() => {
+      setBufferedTime(0);
+      setRetryCount(0);
+    }, 0);
   }, [currentChapter?.id]);
 
-
-
-  // Handle Play/Pause Toggle
+  // Reset initial load ref when retrying (to allow resume logic to run again)
   useEffect(() => {
-    if (typeof (window as WindowWithMedia).electronAPI !== 'undefined') return;
+    if (retryCount > 0) {
+      isInitialLoadRef.current = true;
+    }
+  }, [retryCount]);
+
+  // Update Controls: Create/Update Metadata when Chapter Changes
+  useEffect(() => {
+    if (!currentBook?.id || !currentChapter?.id) return;
     
-    if (mediaRef.current) {
-        try {
-            if (isPlaying) {
-                // Only call play if not already running (though plugin handles it usually)
-                mediaRef.current.play();
-            } else {
-                // Only call pause if status indicates it's running/starting/paused
-                // Avoid calling pause on MEDIA_NONE (0)
-                // Also check if mediaRef.current is valid
-                const status = mediaRef.current._status;
-                // Cordova Media status: 0=None, 1=Starting, 2=Running, 3=Paused, 4=Stopped
-                if (status === 1 || status === 2 || status === 3) {
-                     mediaRef.current.pause();
-                } else {
-                    console.log(`Skipping pause for invalid state: ${status}`);
-                }
-            }
-        } catch (e) {
-            console.warn('Error toggling play/pause', e);
-        }
-    }
-  }, [isPlaying]);
+    MusicControls.create({
+        track: currentChapter.title,
+        artist: currentBook.title,
+        cover: getCoverUrl(currentBook?.coverUrl, currentBook?.libraryId, currentBook?.id) || '',
+        isPlaying: usePlayerStore.getState().isPlaying,
+        dismissable: true,
+        hasPrev: true,
+        hasNext: true,
+        hasClose: true,
+        hasScrubbing: true,
+        duration: usePlayerStore.getState().duration,
+        elapsed: usePlayerStore.getState().currentTime,
+        ticker: `正在播放: ${currentChapter.title}`,
+        playIcon: '',
+        pauseIcon: '',
+        prevIcon: '',
+        nextIcon: '',
+        closeIcon: '',
+        notificationIcon: ''
+    }).catch(console.error);
+  }, [currentBook?.id, currentBook?.title, currentBook?.coverUrl, currentBook?.libraryId, currentChapter?.id, currentChapter?.title]);
 
+  // Update Controls: Duration (if loaded late)
   useEffect(() => {
-    if (typeof (window as WindowWithMedia).electronAPI === 'undefined') return;
-    if (!audioRef.current) return;
-    if (isPlaying) {
-        audioRef.current.play().catch(() => {});
-    } else {
-        audioRef.current.pause();
+    if (duration > 0 && currentChapter?.id) {
+        MusicControls.create({
+            track: currentChapter.title,
+            artist: currentBook?.title || '',
+            cover: getCoverUrl(currentBook?.coverUrl, currentBook?.libraryId, currentBook?.id) || '',
+            isPlaying: usePlayerStore.getState().isPlaying,
+            dismissable: true,
+            hasPrev: true,
+            hasNext: true,
+            hasClose: true,
+            hasScrubbing: true,
+            duration: duration,
+            elapsed: usePlayerStore.getState().currentTime,
+            ticker: `正在播放: ${currentChapter.title}`,
+            playIcon: '',
+            pauseIcon: '',
+            prevIcon: '',
+            nextIcon: '',
+            closeIcon: '',
+            notificationIcon: ''
+        }).catch(console.error);
     }
-  }, [isPlaying]);
-  
-  // Handle Volume
-  useEffect(() => {
-    if (mediaRef.current?.setVolume) {
-        mediaRef.current.setVolume(volume);
-    }
-  }, [volume]);
-  
-  // Handle Speed - Cordova Media doesn't support setRate easily on all platforms?
-  // Android supports setRate since API 23.
-  useEffect(() => {
-      if (mediaRef.current && typeof mediaRef.current.setRate === 'function') {
-          console.log('Applying playback speed change:', playbackSpeed);
-          mediaRef.current.setRate(playbackSpeed);
-      }
-  }, [playbackSpeed]);
+  }, [duration, currentBook?.id, currentBook?.title, currentBook?.coverUrl, currentBook?.libraryId, currentChapter?.id, currentChapter?.title]);
 
   // Media Session / Music Controls Support - Listeners
   useEffect(() => {
-    // Listen for events
-    // We set these up once. Using store getState() ensures we always access fresh state/actions.
     MusicControls.addListener('music-controls-next', () => {
         usePlayerStore.getState().nextChapter();
     });
@@ -745,171 +441,124 @@ const Player: React.FC = () => {
         usePlayerStore.getState().togglePlay();
     });
     MusicControls.addListener('music-controls-destroy', () => {
-        // usePlayerStore.getState().setIsPlaying(false);
-        // Instead of stopping, maybe just pause?
         usePlayerStore.getState().togglePlay();
     });
     MusicControls.addListener('music-controls-toggle-play-pause', () => {
-            usePlayerStore.getState().togglePlay();
+        usePlayerStore.getState().togglePlay();
     });
     MusicControls.addListener('music-controls-seek-to', (payload: { position: number }) => {
-            console.log('Received seek-to event:', payload);
-            const time = payload.position;
-
-            if (shouldTranscode) {
-                 // Reload for transcode seek
-                 console.log(`Remote seek in transcode mode to ${time}s`);
-                 streamOffsetRef.current = time;
-                 const url = getStreamUrl(usePlayerStore.getState().currentChapter?.id || '', time);
-                 initMedia(url);
-                 usePlayerStore.getState().setCurrentTime(time);
-                 return;
-            }
-
-            // Update Native Media immediately
-            if (mediaRef.current) {
-                mediaRef.current.seekTo(time * 1000);
-            }
+        const time = payload.position;
+        if (audioRef.current) {
+            audioRef.current.currentTime = time;
             usePlayerStore.getState().setCurrentTime(time);
             
+            // Immediate update for native UI to avoid jumping back
             MusicControls.updateElapsed({
                 elapsed: time,
                 isPlaying: usePlayerStore.getState().isPlaying
             });
+        }
     });
 
     return () => {
-        // Cleanup to avoid duplicate listeners
         MusicControls.removeAllListeners();
     };
-  }, [shouldTranscode, getStreamUrl, initMedia]);
-
-  // Update Controls: Create/Update Metadata when Chapter Changes
-  useEffect(() => {
-    if (!currentBookId || !currentChapterId) return;
-    
-    // Check if we already have controls for this book to avoid full rebuild flicker?
-    // But track name changes, so we must call create/update.
-    // The plugin implementation updates the notification if ID matches.
-    // Ensure we don't pass nulls.
-    
-    MusicControls.create({
-        track: currentChapterTitle,
-        artist: currentBookTitle,
-        cover: coverUrl || '',
-        isPlaying: isPlayingRef.current,
-        dismissable: true,
-        hasPrev: true,
-        hasNext: true,
-        hasClose: true,
-        hasScrubbing: true,
-        duration: durationRef.current,
-        elapsed: currentTimeRef.current,
-        ticker: `正在播放: ${currentChapterTitle}`,
-        playIcon: '',
-        pauseIcon: '',
-        prevIcon: '',
-        nextIcon: '',
-        closeIcon: '',
-        notificationIcon: ''
-    }).catch(console.error);
-
-  }, [currentBookId, currentBookTitle, currentBookCoverUrl, currentBookLibraryId, currentChapterId, currentChapterTitle, coverUrl]);
+  }, []);
 
   // Update Controls: Play/Pause State
   useEffect(() => {
-      // Pass elapsed time to prevent progress bar jumping to 0
       MusicControls.updateIsPlaying({
           isPlaying: isPlaying,
-          elapsed: currentTime
+          elapsed: usePlayerStore.getState().currentTime
       });
-  }, [isPlaying, currentTime]);
-  
-  // Update Controls: Duration (if loaded late)
-   useEffect(() => {
-       if (duration > 0 && currentChapterId) {
-            // Re-create controls to update duration if it wasn't available initially
-            // This is necessary because updateElapsed doesn't update the total duration on all platforms
-            MusicControls.create({
-                track: currentChapterTitle,
-                artist: currentBookTitle,
-                cover: coverUrl || '',
-                isPlaying: isPlayingRef.current,
-                dismissable: true,
-                hasPrev: true,
-                hasNext: true,
-                hasClose: true,
-                hasScrubbing: true,
-                duration: duration,
-                elapsed: currentTimeRef.current,
-                ticker: `正在播放: ${currentChapterTitle}`,
-                playIcon: '',
-                pauseIcon: '',
-                prevIcon: '',
-                nextIcon: '',
-                closeIcon: '',
-                notificationIcon: ''
-            }).catch(console.error);
-       }
-   }, [duration, currentBookTitle, currentBookCoverUrl, currentBookLibraryId, currentBookId, currentChapterId, currentChapterTitle, coverUrl]);
+  }, [isPlaying]);
 
-  // Preload next chapter logic (Auto-cache)
+  // Sync state with audio element
   useEffect(() => {
-    if ((!autoPreload) || !currentChapter || !currentBook) return;
+    if (!audioRef.current || !currentChapter) return;
+    setTimeout(() => setError(null), 0); // Clear error on source change
+    
+    // Reset retry count when chapter changes (this is also handled in another effect, but safe to double check)
+    // IMPORTANT: If source changes due to transcoding, we do NOT want to reset retry count immediately here
+    // or we might enter a loop. 
+    // Actually, retryCount is part of the dependency array, so this runs on retry too.
+    
+    if (isPlaying) {
+      const playPromise = audioRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise.catch(err => {
+          // Ignore AbortError which happens when pausing/switching quickly
+          if (err.name === 'AbortError' || err.code === 20) {
+            console.log('播放承诺已中止 (正常)');
+            return;
+          }
+          console.error('播放失败', err);
+          // Don't set user-visible error yet, let onError handler try to recover first
+          // setError('播放失败，可能是文件格式不支持或网络错误');
+        });
+      }
+    } else {
+      audioRef.current.pause();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying, currentChapter?.id, retryCount, shouldTranscode]);
+
+  // Preload and Server-side Cache next chapter logic
+  useEffect(() => {
+    if ((!autoPreload && !autoCache) || !currentChapter || !currentBook) return;
     
     // Find next chapter index
-    const currentIndex = chapters.findIndex(c => c.id === currentChapter.id);
-    if (currentIndex !== -1 && currentIndex < chapters.length - 1) {
+    apiClient.get(`/api/books/${currentBook.id}/chapters`).then(res => {
+      const chapters = res.data;
+      const currentIndex = chapters.findIndex((c: { id: string }) => c.id === currentChapter.id);
+      if (currentIndex !== -1 && currentIndex < chapters.length - 1) {
+        const nextChapterId = chapters[currentIndex + 1].id;
+        const nextSrc = getStreamUrl(nextChapterId);
         
-        // 1. Auto Preload (Memory - Audio Object)
-        if (autoPreload && !Capacitor.isNativePlatform()) {
-             // ... existing preload logic
-        }
-    }
-  }, [autoPreload, currentBook, currentChapter, chapters]);
-
-  // Handle Skip Intro and Outro
-  // Replaced handleTimeUpdate with polling in initMedia
-  
-  // Logic to handle skip intro/outro inside polling or effect?
-  useEffect(() => {
-     // Check for skip intro/outro every second using currentTime
-     if (isPlaying) {
-        // Handle Skip Intro (only once per chapter load ideally, but here simple check)
-        if (isInitialLoadRef.current && currentBook?.skipIntro) {
-            if (currentTime < currentBook.skipIntro) {
-                // Seek
-                if (mediaRef.current) {
-                    if (shouldTranscode) {
-                        console.log(`Skip intro in transcode mode to ${currentBook.skipIntro}s`);
-                        streamOffsetRef.current = currentBook.skipIntro;
-                        const url = getStreamUrl(currentChapter.id, currentBook.skipIntro);
-                        initMedia(url);
-                    } else {
-                        mediaRef.current.seekTo(currentBook.skipIntro * 1000); // ms
-                    }
-                    setCurrentTime(currentBook.skipIntro);
-                }
-            }
-            // eslint-disable-next-line react-hooks/immutability
-            isInitialLoadRef.current = false;
+        // 1. Auto Preload (Memory)
+        if (autoPreload) {
+          if (!preloadAudioRef.current) {
+            preloadAudioRef.current = new Audio();
+            preloadAudioRef.current.preload = 'auto';
+          }
+          
+          if (preloadAudioRef.current.src !== nextSrc) {
+            console.log('正在预加载下一章:', chapters[currentIndex + 1].title);
+            preloadAudioRef.current.src = nextSrc;
+            preloadAudioRef.current.load();
+          }
         }
 
-        // Handle Skip Outro
-        if (currentBook?.skipOutro && duration > 0) {
-            const minChapterDuration = (currentBook.skipIntro || 0) + currentBook.skipOutro + 10;
-            if (duration > minChapterDuration && (duration - currentTime) <= currentBook.skipOutro) {
-                nextChapter();
-            }
+        // 2. Auto Cache (Server-side WebDAV)
+        if (autoCache) {
+           console.log('触发服务器端缓存:', chapters[currentIndex + 1].title);
+           apiClient.post(`/api/cache/${nextChapterId}`).catch(err => {
+              console.error('触发服务器端缓存失败', err);
+           });
         }
-     }
-  }, [currentTime, isPlaying, currentBook, duration, nextChapter, setCurrentTime, currentChapter, getStreamUrl, initMedia, shouldTranscode]);
+      }
+    }).catch(err => console.error('预加载失败', err));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentChapter?.id, autoPreload, autoCache, currentBook?.id]);
 
   // Handle Skip Intro and Outro
   const handleTimeUpdate = () => {
     if (!audioRef.current) return;
     
     const time = audioRef.current.currentTime;
+    
+    // Prevent overwriting persisted progress with 0 on initial load
+    // If we are at the very beginning (time < 0.5) but store has significant progress (> 2s),
+    // ignore this update until we've resumed properly.
+    if (isInitialLoadRef.current && time < 0.5 && currentTime > 2) {
+      return;
+    }
+
+    // Mark initial load as done if we have successfully played past 1s
+    if (isInitialLoadRef.current && time > 1) {
+       isInitialLoadRef.current = false;
+    }
+
     setCurrentTime(time);
 
     // Update buffered time more accurately
@@ -942,7 +591,6 @@ const Player: React.FC = () => {
         audioRef.current.currentTime = currentBook.skipIntro;
         setCurrentTime(currentBook.skipIntro);
       }
-      // eslint-disable-next-line react-hooks/immutability
       isInitialLoadRef.current = false;
     }
 
@@ -958,22 +606,54 @@ const Player: React.FC = () => {
   };
 
   const handleProgress = () => {
-      // Not supported in Cordova Media easily (no buffer progress)
+    if (audioRef.current && audioRef.current.buffered.length > 0) {
+      const time = audioRef.current.currentTime;
+      let currentRangeEnd = 0;
+      for (let i = 0; i < audioRef.current.buffered.length; i++) {
+        if (audioRef.current.buffered.start(i) <= time && audioRef.current.buffered.end(i) >= time) {
+          currentRangeEnd = audioRef.current.buffered.end(i);
+          break;
+        }
+      }
+      if (currentRangeEnd === 0) {
+        for (let i = audioRef.current.buffered.length - 1; i >= 0; i--) {
+          if (audioRef.current.buffered.start(i) <= time) {
+            currentRangeEnd = audioRef.current.buffered.end(i);
+            break;
+          }
+        }
+      }
+      setBufferedTime(currentRangeEnd);
+    }
   };
 
   // Handle Sleep Timer Countdown
   useEffect(() => {
-    if (sleepTimer === null || sleepTimer <= 0 || !isPlaying) return;
+    if (sleepTimer === null || sleepTimer <= 0 || !isPlaying || !sleepTimerEndTimeRef.current) return;
 
+    // Clear any existing interval
+    if (sleepTimerIntervalRef.current) {
+      clearInterval(sleepTimerIntervalRef.current);
+    }
+
+    // Set up new interval to update remaining time based on end time
     const interval = setInterval(() => {
-      setSleepTimer(prev => {
-        if (prev === null || prev <= 1) return 0;
-        return prev - 1;
-      });
+      if (sleepTimerEndTimeRef.current) {
+        const remaining = Math.max(0, Math.floor((sleepTimerEndTimeRef.current - Date.now()) / 1000));
+        setSleepTimer(remaining);
+      }
     }, 1000);
 
-    return () => clearInterval(interval);
-  }, [sleepTimer, isPlaying]);
+    sleepTimerIntervalRef.current = interval;
+
+    return () => {
+      if (sleepTimerIntervalRef.current) {
+        clearInterval(sleepTimerIntervalRef.current);
+        sleepTimerIntervalRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sleepTimer === null, isPlaying]);
 
   // Handle Sleep Timer Expiration
   useEffect(() => {
@@ -981,7 +661,15 @@ const Player: React.FC = () => {
       if (isPlaying) {
         togglePlay();
       }
-      setSleepTimer(null);
+      
+      // Reset sleep timer references
+      sleepTimerEndTimeRef.current = null;
+      if (sleepTimerIntervalRef.current) {
+        clearInterval(sleepTimerIntervalRef.current);
+        sleepTimerIntervalRef.current = null;
+      }
+      
+      setTimeout(() => setSleepTimer(null), 0);
     }
   }, [sleepTimer, isPlaying, togglePlay]);
 
@@ -992,20 +680,24 @@ const Player: React.FC = () => {
 
   useEffect(() => {
     if (!audioRef.current) return;
-    audioRef.current.volume = volume;
-  }, [volume]);
+    audioRef.current.volume = isMuted ? 0 : volume;
+  }, [volume, isMuted]);
+
+  const currentTimeRef = useRef(0);
+  useEffect(() => {
+    currentTimeRef.current = currentTime;
+  }, [currentTime]);
 
   // Sync progress to backend
   useEffect(() => {
     if (isPlaying && currentBook && currentChapter) {
       // Save progress immediately when starting
       const saveProgress = () => {
-        if (!token) return;
         apiClient.post('/api/progress', {
           bookId: currentBook.id,
           chapterId: currentChapter.id,
           position: Math.floor(currentTimeRef.current)
-        }).catch(err => console.error('Failed to sync progress', err));
+        }).catch(err => console.error('同步进度失败', err));
       };
 
       saveProgress();
@@ -1017,12 +709,20 @@ const Player: React.FC = () => {
     return () => {
       if (progressTimerRef.current) clearInterval(progressTimerRef.current);
     };
-  }, [isPlaying, currentBook, currentChapter, token]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying, currentBook?.id, currentChapter?.id]);
 
   const handleLoadedMetadata = () => {
     if (audioRef.current) {
-      audioRef.current.playbackRate = playbackSpeed;
-      const browserDuration = audioRef.current.duration;
+      let browserDuration = audioRef.current.duration;
+      
+      // Handle infinite duration (common in streaming/transcoding)
+      if (!Number.isFinite(browserDuration) || isNaN(browserDuration)) {
+        if (currentChapter?.duration) {
+          browserDuration = currentChapter.duration;
+        }
+      }
+
       setDuration(browserDuration);
 
       // Resume position from store if this is the initial load for this chapter
@@ -1031,23 +731,26 @@ const Player: React.FC = () => {
         if (resumePosition > 0) {
           // If progress is very close to the end (e.g., within 2 seconds or > 99%), start from the beginning
           if (browserDuration > 0 && (browserDuration - resumePosition < 2 || resumePosition / browserDuration > 0.99)) {
-            console.log(`Chapter ${currentChapter?.title} was already finished, starting from beginning`);
+            console.log(`Chapter ${currentChapter?.title} 已完成，从头开始`);
             audioRef.current.currentTime = 0;
             setCurrentTime(0);
           } else {
-            console.log(`Resuming chapter ${currentChapter?.title} at ${resumePosition}s`);
+            console.log(`继续章节 ${currentChapter?.title} at ${resumePosition}s`);
             audioRef.current.currentTime = resumePosition;
           }
         }
       }
 
-      // Sync duration back to server if it's significantly different
-      if (currentChapter && browserDuration > 0 && token) {
+      // Ensure playback rate is applied
+      audioRef.current.playbackRate = playbackSpeed;
+
+      // Sync duration back to server if it's significantly different and valid
+      if (currentChapter && Number.isFinite(browserDuration) && browserDuration > 0) {
         const diff = Math.abs(browserDuration - (currentChapter.duration || 0));
         if (diff > 2) {
-          console.log(`Syncing accurate duration for ${currentChapter.title}: ${browserDuration}s`);
+          console.log(`同步准确的持续时间: ${currentChapter.title}: ${browserDuration}s`);
           apiClient.patch(`/api/chapters/${currentChapter.id}`, { duration: browserDuration })
-            .catch(err => console.error('Failed to sync duration', err));
+            .catch(err => console.error('同步持续时间失败', err));
         }
       }
     }
@@ -1056,88 +759,13 @@ const Player: React.FC = () => {
   const [isSeeking, setIsSeeking] = useState(false);
   const [seekTime, setSeekTime] = useState(0);
 
-  // Sync ref for polling loop
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/immutability
-    isSeekingRef.current = isSeeking;
-  }, [isSeeking]);
-
-  // Debounced Seek Helper
-  const performSeek = useCallback((time: number) => {
-      if (seekTimeoutRef.current) {
-          clearTimeout(seekTimeoutRef.current);
-      }
-
-      // Block timer updates to prevent UI jumping back to old position
-      // eslint-disable-next-line react-hooks/immutability
-      isSeekingRef.current = true;
-
-      // Update UI immediately
-      setCurrentTime(time);
-
-      // Handle Transcoded Seek (Server-side)
-      if (shouldTranscode) {
-          // Debounce reload
-          seekTimeoutRef.current = setTimeout(() => {
-              console.log(`Performing transcoded seek to ${time}s (reload stream)`);
-              streamOffsetRef.current = time;
-              const currentId = usePlayerStore.getState().currentChapter?.id;
-              if (currentId) {
-                  const url = getStreamUrl(currentId, time) + (retryCount > 0 ? `&retry=${retryCount}` : '');
-                  if (audioRef.current) {
-                      audioRef.current.src = url;
-                      audioRef.current.load();
-                      audioRef.current.play().catch(() => {});
-                  } else {
-                      initMediaRef.current(url);
-                  }
-              }
-              
-              // Reset seeking lock
-              setTimeout(() => {
-                  if (!isSeeking) {
-                      isSeekingRef.current = false;
-                  }
-              }, 1000);
-          }, 500); // Slightly longer debounce for reload
-          return;
-      }
-
-      // Handle Native Seek
-      seekTimeoutRef.current = setTimeout(() => {
-          if (mediaRef.current) {
-              console.log(`Performing debounced seek to ${time}s`);
-              mediaRef.current.seekTo(time * 1000);
-              
-              // Allow timer updates after a delay to let seek complete
-              // The native player needs time to process the seek
-              setTimeout(() => {
-                  // Only reset if user isn't actually dragging
-                  if (!isSeeking) {
-                      isSeekingRef.current = false;
-                  }
-              }, 1000);
-          } else {
-              // If media is gone, release lock
-              if (!isSeeking) {
-                  isSeekingRef.current = false;
-              }
-          }
-      }, 300); // 300ms debounce
-  }, [setCurrentTime, isSeeking, shouldTranscode, retryCount, getStreamUrl]);
-
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
     setSeekTime(time);
     if (!isSeeking) {
-      // Seek Native Media
-      if (mediaRef.current && !shouldTranscode) {
-        performSeek(time);
-      }
-      if (audioRef.current && !shouldTranscode) {
+      if (audioRef.current) {
         audioRef.current.currentTime = time;
       }
-      // Also update React state for UI
       setCurrentTime(time);
     }
   };
@@ -1150,36 +778,14 @@ const Player: React.FC = () => {
   const handleSeekEnd = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
     setIsSeeking(false);
-
-    if (shouldTranscode) {
-      console.log(`Seek in transcode mode to ${time}s (reload stream)`);
-      streamOffsetRef.current = time;
-      const url = getStreamUrl(currentChapter.id, time) + (retryCount > 0 ? `&retry=${retryCount}` : '');
-      if (audioRef.current) {
-        audioRef.current.src = url;
-        audioRef.current.load();
-        audioRef.current.play().catch(() => {});
-        setCurrentTime(time);
-        return;
-      }
-      initMedia(url);
-      setCurrentTime(time);
-      return;
-    }
-
-    // Seek Native Media
-    if (mediaRef.current) {
-      performSeek(time);
-    }
     if (audioRef.current) {
       audioRef.current.currentTime = time;
     }
-    // Also update React state for UI
     setCurrentTime(time);
   };
 
   const formatTime = (time: number) => {
-    if (!time || time < 0) return '0:00';
+    if (!Number.isFinite(time) || isNaN(time) || time < 0) return '0:00';
     const h = Math.floor(time / 3600);
     const m = Math.floor((time % 3600) / 60);
     const s = Math.floor(time % 60);
@@ -1190,6 +796,16 @@ const Player: React.FC = () => {
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const getChapterProgressText = (chapter: any) => {
+    if (!chapter.progressPosition || !chapter.duration) return null;
+    
+    const percent = Math.floor((chapter.progressPosition / chapter.duration) * 100);
+    if (percent === 0) return null;
+    if (percent >= 95) return '已播完';
+    return `已播${percent}%`;
+  };
+
   const hiddenPaths = ['/admin', '/settings', '/downloads', '/cache'];
   const isHiddenPage = hiddenPaths.some(path => location.pathname.startsWith(path));
   const isWidgetMode = window.location.pathname.startsWith('/widget');
@@ -1197,9 +813,13 @@ const Player: React.FC = () => {
   // Auto collapse player when navigating to hidden pages
   useEffect(() => {
     if (isHiddenPage && isExpanded) {
-      setIsExpanded(false);
+      setTimeout(() => setIsExpanded(false), 0);
     }
   }, [location.pathname, isExpanded, isHiddenPage, setIsExpanded]);
+
+  useEffect(() => {
+    setShowVolumeControl(false);
+  }, [isExpanded]);
 
   // Fullscreen Logic for Widget
   const toggleFullscreen = async () => {
@@ -1210,7 +830,7 @@ const Player: React.FC = () => {
 
     // Check if fullscreen is allowed
     if (!document.fullscreenEnabled) {
-      console.warn('Fullscreen is not enabled in this context');
+      console.warn('在此上下文中未启用全屏');
       return;
     }
 
@@ -1223,7 +843,7 @@ const Player: React.FC = () => {
         setIsExpanded(false);
       }
     } catch (err) {
-      console.error('Error toggling fullscreen:', err);
+      console.error('切换全屏时出错:', err);
       // Do NOT fallback to isExpanded=true if fullscreen fails
       // This prevents the UI from breaking inside a small iframe
     }
@@ -1235,7 +855,7 @@ const Player: React.FC = () => {
       try {
         await document.exitFullscreen();
       } catch (err) {
-        console.error('Error exiting fullscreen:', err);
+        console.error('退出全屏时出错:', err);
       }
     }
     setIsExpanded(false);
@@ -1263,8 +883,17 @@ const Player: React.FC = () => {
     left: isWidgetMode ? '0' : undefined,
     right: isWidgetMode ? '0' : undefined,
   } : {};
-  // const audioSrc = webAudioUrl || getStreamUrl(currentChapter.id);
-  // const shouldUseWebAudio = !useNativeMedia;
+
+  const handleEnded = () => {
+    if (currentBook && currentChapter) {
+      apiClient.post('/api/progress', {
+        bookId: currentBook.id,
+        chapterId: currentChapter.id,
+        position: Math.floor(duration)
+      }).catch(err => console.error('同步最终进度失败', err));
+    }
+    nextChapter();
+  };
 
   return (
     <div 
@@ -1278,52 +907,78 @@ const Player: React.FC = () => {
       `}
       style={miniPlayerStyle}
     >
-      {typeof (window as WindowWithMedia).electronAPI !== 'undefined' && (
-        <audio
-          ref={audioRef}
-          src={getStreamUrl(currentChapter.id) + (retryCount > 0 ? `&retry=${retryCount}` : '')}
-          preload="auto"
-          crossOrigin="anonymous"
-          onTimeUpdate={handleTimeUpdate}
-          onProgress={handleProgress}
-          onLoadedMetadata={handleLoadedMetadata}
-          onEnded={handleEnded}
-          onPlay={() => {
-            setIsPlaying(true);
-            if (audioRef.current) audioRef.current.playbackRate = playbackSpeed;
-          }}
-          onPause={() => setIsPlaying(false)}
-          onError={(e) => {
-            const audio = audioRef.current;
-            if (audio && audio.error) {
-              // Ignore aborted errors (code 4) -> Actually 4 is MEDIA_ERR_SRC_NOT_SUPPORTED, 20 is Abort? 
-              // Standard: 1=Abort, 2=Network, 3=Decode, 4=SrcNotSupported
-              // Auto retry on Abort (1), decode error (3) or not supported (4)
-              // Android sometimes returns 1 for generic failures
-              if ((audio.error.code === 1 || audio.error.code === 3 || audio.error.code === 4) && retryCount < 3) {
-                   console.log(`Playback error ${audio.error.code}, retrying with transcode (${retryCount + 1}/3)...`);
-                   setShouldTranscode(true);
-                   // eslint-disable-next-line react-hooks/immutability
-                   isInitialLoadRef.current = true;
-                   setRetryCount(prev => prev + 1);
-                   return;
-              }
+      <audio
+        ref={audioRef}
+        src={getStreamUrl(currentChapter.id)}
+        crossOrigin="anonymous"
+        onTimeUpdate={handleTimeUpdate}
+        onProgress={handleProgress}
+        onLoadedMetadata={handleLoadedMetadata}
+        onEnded={handleEnded}
+        onPlay={() => {
+          setIsPlaying(true);
+          if (audioRef.current) {
+            audioRef.current.playbackRate = playbackSpeed;
+          }
+        }}
+        onPause={() => {
+          const state = usePlayerStore.getState();
+          // If the user wants to ignore audio focus, and the player was unexpectedly paused 
+          // by the system (i.e. isPlaying is still true in the store), force it to resume.
+          if (state.ignoreAudioFocus && state.isPlaying) {
+             console.log('System paused audio but ignoreAudioFocus is true, forcing play...');
+             setTimeout(() => {
+                if (audioRef.current && usePlayerStore.getState().isPlaying) {
+                   audioRef.current.play().catch(err => console.error('Force play failed', err));
+                }
+             }, 50);
+          } else {
+             setIsPlaying(false);
+          }
+        }}
+        onError={(e) => {
+          const audio = audioRef.current;
+          console.log('触发音频错误事件', { 
+            error: audio?.error, 
+            code: audio?.error?.code, 
+            message: audio?.error?.message,
+            retryCount,
+            shouldTranscode
+          });
 
-              console.error('Audio element error', audio.error);
-              
-              // If we were trying to play a cached file and it failed, fallback to network
-              if (cachedUri) {
-                  console.log('Cached file playback failed, falling back to network stream...');
-                  setCachedUri(null); // This will trigger re-render with network URL
-                  return;
-              }
-            } else {
-              console.error('Audio element error (unknown)', e);
+          if (audio && audio.error) {
+            // Ignore aborted errors (code 4) ONLY if we are not already trying to recover
+            // Actually code 4 is MEDIA_ERR_SRC_NOT_SUPPORTED, which is exactly what we want to catch for WMA
+            // Code 1 is MEDIA_ERR_ABORTED
+            
+            if (audio.error.code === 1) {
+              console.log('播放已中止 (用户操作)');
+              return;
             }
-            setError('音频加载出错，请尝试重新扫描库或稍后再试');
-          }}
-        />
-      )}
+
+            // Auto retry on network (2), decode error (3) or source not supported (4)
+            // We include network error (2) in retry logic just in case, but transcode mainly fixes 3 & 4
+            if (retryCount < 3) {
+                 console.log(`Playback error ${audio.error.code}, 使用转码重试 (${retryCount + 1}/3)...`);
+                 setShouldTranscode(true);
+                 setRetryCount(prev => prev + 1);
+                 return;
+            }
+            console.error('音频元素错误', audio.error);
+          } else {
+            // Even if audio.error is null, if we have an error event and haven't retried max times, try transcoding
+            // This handles edge cases where browser doesn't populate error object properly
+            if (retryCount < 3) {
+                console.log('未知的音频错误，尝试转码重试...');
+                setShouldTranscode(true);
+                setRetryCount(prev => prev + 1);
+                return;
+            }
+            console.error('音频元素错误 (未知)', e);
+          }
+          setError('音频加载出错，请尝试重新扫描库或稍后再试');
+        }}
+      />
 
       {error && !isExpanded && (
         <div className="absolute top-0 left-4 right-4 bg-red-500 text-white text-[10px] py-1 px-2 text-center rounded-t-lg animate-pulse z-[101]">
@@ -1343,16 +998,16 @@ const Player: React.FC = () => {
               <div 
                 className="w-14 h-14 sm:w-16 sm:h-16 rounded-xl overflow-hidden shadow-2xl cursor-pointer hover:scale-105 transition-transform border-2 border-white/50 dark:border-slate-700/50"
                 style={{ 
-                  borderColor: themeColor ? `${themeColor.replace('0.15', '0.3').replace('0.1', '0.3')}` : undefined
+                  borderColor: effectiveThemeColor ? setAlpha(effectiveThemeColor, 0.3) : undefined
                 }}
               >
                 <img 
-                  src={coverUrl} 
+                  src={getCoverUrl(currentBook?.coverUrl, currentBook?.libraryId, currentBook?.id)} 
                   alt={currentBook?.title}
                   crossOrigin="anonymous"
                   className="w-full h-full object-cover"
                   onError={(e) => {
-                    (e.target as HTMLImageElement).src = '/logo.png';
+                    (e.target as HTMLImageElement).src = 'https://placehold.co/300x400?text=No+Cover';
                   }}
                 />
               </div>
@@ -1363,31 +1018,31 @@ const Player: React.FC = () => {
             className={`
               h-full ${isWidgetMode ? 'max-w-none rounded-none border-none shadow-none' : 'max-w-7xl mx-auto rounded-2xl sm:rounded-3xl shadow-2xl shadow-black/10 border border-slate-200/50 dark:border-slate-800/50'}
               bg-white/95 dark:bg-slate-900/95 backdrop-blur-md 
-              flex items-center justify-between ${isWidgetMode ? 'px-3 max-[380px]:flex-col max-[380px]:justify-center max-[380px]:gap-1.5 max-[380px]:py-2' : 'px-3 sm:px-6 gap-3'} pointer-events-auto
+              flex items-center justify-between gap-3 sm:gap-4 ${isWidgetMode ? 'px-3 max-[380px]:flex-col max-[380px]:justify-center max-[380px]:gap-1.5 max-[380px]:py-2' : 'px-3 sm:px-6'} pointer-events-auto
               transition-all duration-300
             `}
             style={{ 
-              backgroundColor: isWidgetMode ? undefined : (themeColor ? `${themeColor.replace('0.15', '0.05').replace('0.1', '0.05')}` : undefined),
-              borderColor: isWidgetMode ? undefined : (themeColor ? `${themeColor.replace('0.15', '0.2').replace('0.1', '0.2')}` : undefined)
+              backgroundColor: isWidgetMode ? undefined : (miniPlayerThemeColor ? setAlpha(miniPlayerThemeColor, 0.05) : undefined),
+              borderColor: isWidgetMode ? undefined : (miniPlayerThemeColor ? setAlpha(miniPlayerThemeColor, 0.2) : undefined)
             }}
           >
             {/* Info */}
-            <div className={`flex items-center gap-2 sm:gap-3 min-w-0 ${isWidgetMode ? 'max-[380px]:w-full max-[380px]:max-w-none' : ''} max-w-[100px] max-[380px]:max-w-[140px] sm:max-w-[200px] md:max-w-[240px] lg:max-w-[320px] flex-none`}>
+            <div className={`flex items-center gap-2 sm:gap-3 min-w-0 ${isWidgetMode ? 'max-[380px]:w-full max-[380px]:max-w-none' : ''} max-[500px]:max-w-[48px] max-[380px]:max-w-[40px] sm:max-w-[200px] md:max-w-[240px] lg:max-w-[320px] md:flex-none flex-1`}>
               <div 
                 className="w-12 h-12 max-[380px]:w-10 max-[380px]:h-10 sm:w-16 sm:h-16 rounded-lg sm:rounded-xl overflow-hidden shadow-md cursor-pointer shrink-0"
                 onClick={toggleFullscreen}
               >
                 <img 
-                  src={coverUrl} 
+                  src={getCoverUrl(currentBook?.coverUrl, currentBook?.libraryId, currentBook?.id)} 
                   alt={currentBook?.title}
-                  crossOrigin="anonymous"
+                  referrerPolicy="no-referrer"
                   className="w-full h-full object-cover"
                   onError={(e) => {
-                    (e.target as HTMLImageElement).src = '/logo.png';
+                    (e.target as HTMLImageElement).src = 'https://placehold.co/300x400?text=No+Cover';
                   }}
                 />
               </div>
-              <div className="min-w-0 flex-1 hidden md:block">
+              <div className="min-w-0 flex-1 hidden min-[500px]:block md:block max-[380px]:hidden">
                 <h4 className="font-bold dark:text-white truncate text-sm max-[380px]:text-xs">{currentBook?.title}</h4>
                 <p className="text-slate-500 truncate text-xs max-[380px]:text-[10px]">{currentChapter.title}</p>
               </div>
@@ -1403,8 +1058,8 @@ const Player: React.FC = () => {
                    currentTime={currentTime}
                    duration={duration}
                    bufferedTime={bufferedTime}
-                   themeColor={themeColor}
-                   onSeek={handleSeek}
+                  themeColor={miniPlayerThemeColor}
+                  onSeek={handleSeek}
                    onSeekStart={handleSeekStart}
                    onSeekEnd={handleSeekEnd}
                  />
@@ -1416,52 +1071,40 @@ const Player: React.FC = () => {
               <div className="flex items-center gap-6">
                 <button 
                   onClick={prevChapter} 
-                  className="text-slate-400 hover:scale-110 transition-all"
-                  style={{ color: themeColor ? (isLight(themeColor) ? '#475569' : themeColor.replace('0.15', '0.6').replace('0.1', '0.6')) : undefined }}
+                  className={`${useDarkControls ? 'text-slate-200 hover:text-white' : 'text-slate-400 dark:text-slate-300'} hover:scale-110 transition-all`}
+                  style={{ color: (miniPlayerThemeColor && !useDarkControls) ? (isLight(miniPlayerThemeColor) ? '#475569' : setAlpha(miniPlayerThemeColor, 0.6)) : undefined }}
                 >
                   <SkipBack size={20} fill="currentColor" />
                 </button>
                 <button 
-                  onClick={() => { 
-                      if (mediaRef.current) {
-                          const current = usePlayerStore.getState().currentTime;
-                          const newTime = Math.max(0, current - 15);
-                          performSeek(newTime);
-                      }
-                  }}
-                  className="text-slate-400 hover:scale-110 transition-all"
-                  style={{ color: themeColor ? (isLight(themeColor) ? '#475569' : themeColor.replace('0.15', '0.6').replace('0.1', '0.6')) : undefined }}
+                  onClick={() => { if (audioRef.current) audioRef.current.currentTime -= 15; }}
+                  className={`${useDarkControls ? 'text-slate-200 hover:text-white' : 'text-slate-400 dark:text-slate-300'} hover:scale-110 transition-all`}
+                  style={{ color: (miniPlayerThemeColor && !useDarkControls) ? (isLight(miniPlayerThemeColor) ? '#475569' : setAlpha(miniPlayerThemeColor, 0.6)) : undefined }}
                 >
                   <RotateCcw size={18} />
                 </button>
                 <button 
                   onClick={togglePlay}
-                  className="w-10 h-10 rounded-full text-white flex items-center justify-center shadow-lg hover:scale-105 transition-all"
+                  className={`w-10 h-10 rounded-full text-white flex items-center justify-center shadow-lg hover:scale-105 transition-all ${!effectiveThemeColor ? 'bg-primary-600 dark:bg-primary-600' : ''}`}
                   style={{ 
-                    backgroundColor: themeColor ? themeColor.replace('0.15', '1.0').replace('0.1', '1.0') : undefined,
-                    boxShadow: themeColor ? `0 10px 15px -3px ${themeColor.replace('0.15', '0.3').replace('0.1', '0.3')}` : undefined
+                    backgroundColor: effectiveThemeColor ? toSolidColor(effectiveThemeColor) : undefined,
+                    boxShadow: effectiveThemeColor ? `0 10px 15px -3px ${setAlpha(effectiveThemeColor, 0.3)}` : undefined,
+                    color: (effectiveThemeColor && isLight(effectiveThemeColor)) ? '#475569' : (effectiveThemeColor ? '#ffffff' : undefined)
                   }}
                 >
                   {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-1" />}
                 </button>
                 <button 
-                  onClick={() => { 
-                      if (mediaRef.current) {
-                          const current = usePlayerStore.getState().currentTime;
-                          const newTime = current + 15;
-                          mediaRef.current.seekTo(newTime * 1000);
-                          setCurrentTime(newTime);
-                      }
-                  }}
-                  className="text-slate-400 hover:scale-110 transition-all"
-                  style={{ color: themeColor ? (isLight(themeColor) ? '#475569' : themeColor.replace('0.15', '0.6').replace('0.1', '0.6')) : undefined }}
+                  onClick={() => { if (audioRef.current) audioRef.current.currentTime += 30; }}
+                  className={`${useDarkControls ? 'text-slate-200 hover:text-white' : 'text-slate-400 dark:text-slate-300'} hover:scale-110 transition-all`}
+                  style={{ color: (miniPlayerThemeColor && !useDarkControls) ? (isLight(miniPlayerThemeColor) ? '#475569' : setAlpha(miniPlayerThemeColor, 0.6)) : undefined }}
                 >
                   <RotateCw size={18} />
                 </button>
                 <button 
                   onClick={nextChapter} 
-                  className="text-slate-400 hover:scale-110 transition-all"
-                  style={{ color: themeColor ? (isLight(themeColor) ? '#475569' : themeColor.replace('0.15', '0.6').replace('0.1', '0.6')) : undefined }}
+                  className={`${useDarkControls ? 'text-slate-200 hover:text-white' : 'text-slate-400 dark:text-slate-300'} hover:scale-110 transition-all`}
+                  style={{ color: (miniPlayerThemeColor && !useDarkControls) ? (isLight(miniPlayerThemeColor) ? '#475569' : setAlpha(miniPlayerThemeColor, 0.6)) : undefined }}
                 >
                   <SkipForward size={20} fill="currentColor" />
                 </button>
@@ -1476,7 +1119,7 @@ const Player: React.FC = () => {
                   currentTime={currentTime}
                   duration={duration}
                   bufferedTime={bufferedTime}
-                  themeColor={themeColor}
+                  themeColor={miniPlayerThemeColor}
                   onSeek={handleSeek}
                   onSeekStart={handleSeekStart}
                   onSeekEnd={handleSeekEnd}
@@ -1487,7 +1130,7 @@ const Player: React.FC = () => {
 
             {/* Mobile Controls - Only visible on small screens */}
             <div className={`flex md:hidden items-center gap-2 sm:gap-3 flex-1 min-w-0 justify-end ${isWidgetMode ? 'max-[380px]:w-full max-[380px]:justify-center max-[380px]:gap-6 max-[380px]:flex-none' : ''}`}>
-              <div className="flex-1 min-w-0 h-2 block">
+              <div className={`flex-1 min-w-0 h-1.5 py-4 flex items-center w-full ${isWidgetMode ? 'max-[380px]:hidden' : ''}`}>
                 <ProgressBar 
                   isMini={true} 
                   isSeeking={isSeeking}
@@ -1495,7 +1138,7 @@ const Player: React.FC = () => {
                   currentTime={currentTime}
                   duration={duration}
                   bufferedTime={bufferedTime}
-                  themeColor={themeColor}
+                  themeColor={miniPlayerThemeColor}
                   onSeek={handleSeek}
                   onSeekStart={handleSeekStart}
                   onSeekEnd={handleSeekEnd}
@@ -1505,31 +1148,28 @@ const Player: React.FC = () => {
                 {isWidgetMode && (
                   <div className="flex items-center gap-1">
                     <button 
-                      onClick={() => { 
-                          if (mediaRef.current) {
-                              const current = usePlayerStore.getState().currentTime;
-                              const newTime = Math.max(0, current - 15);
-                              performSeek(newTime);
-                          }
-                      }}
-                      className="p-1.5 text-slate-400 transition-colors hover:text-primary-500"
-                      style={{ color: themeColor ? (isLight(themeColor) ? '#475569' : themeColor.replace('0.15', '0.6').replace('0.1', '0.6')) : undefined }}
-                    >
-                      <RotateCcw size={16} />
-                    </button>
-                    <button 
-                      onClick={prevChapter}
-                      className="p-1.5 text-slate-400 transition-colors hover:text-primary-500"
-                      style={{ color: themeColor ? (isLight(themeColor) ? '#475569' : themeColor.replace('0.15', '0.6').replace('0.1', '0.6')) : undefined }}
-                    >
+                    onClick={() => { if (audioRef.current) audioRef.current.currentTime -= 15; }}
+                    className={`p-1.5 transition-colors hover:text-primary-500 ${useDarkControls ? 'text-slate-200' : 'text-slate-400 dark:text-slate-300'}`}
+                    style={{ color: (miniPlayerThemeColor && !useDarkControls) ? (isLight(miniPlayerThemeColor) ? '#475569' : setAlpha(miniPlayerThemeColor, 0.6)) : undefined }}
+                  >
+                    <RotateCcw size={16} />
+                  </button>
+                  <button 
+                    onClick={prevChapter}
+                    className={`p-1.5 transition-colors hover:text-primary-500 ${useDarkControls ? 'text-slate-200' : 'text-slate-400 dark:text-slate-300'}`}
+                    style={{ color: (miniPlayerThemeColor && !useDarkControls) ? (isLight(miniPlayerThemeColor) ? '#475569' : setAlpha(miniPlayerThemeColor, 0.6)) : undefined }}
+                  >
                       <SkipBack size={16} fill="currentColor" />
                     </button>
                   </div>
                 )}
                 <button 
                   onClick={togglePlay}
-                  className="w-10 h-10 max-[380px]:w-8 max-[380px]:h-8 rounded-full text-white flex items-center justify-center shadow-md hover:scale-105 transition-transform"
-                  style={{ backgroundColor: themeColor ? themeColor.replace('0.15', '1.0').replace('0.1', '1.0') : undefined }}
+                  className={`w-10 h-10 max-[380px]:w-8 max-[380px]:h-8 rounded-full text-white flex items-center justify-center shadow-md hover:scale-105 transition-transform ${!effectiveThemeColor ? 'bg-primary-600 dark:bg-primary-600' : ''}`}
+                  style={{ 
+                    backgroundColor: effectiveThemeColor ? toSolidColor(effectiveThemeColor) : undefined,
+                    color: (effectiveThemeColor && isLight(effectiveThemeColor)) ? '#475569' : (effectiveThemeColor ? '#ffffff' : undefined)
+                  }}
                 >
                   {isPlaying ? <Pause size={20} className="max-[380px]:w-4 max-[380px]:h-4" fill="currentColor" /> : <Play size={20} className="ml-1 max-[380px]:w-4 max-[380px]:h-4" fill="currentColor" />}
                 </button>
@@ -1538,21 +1178,15 @@ const Player: React.FC = () => {
                     {/* Always show Next button */}
                     <button 
                       onClick={nextChapter}
-                      className="p-1.5 text-slate-400 transition-colors hover:text-primary-500"
-                      style={{ color: themeColor ? (isLight(themeColor) ? '#475569' : themeColor.replace('0.15', '0.6').replace('0.1', '0.6')) : undefined }}
+                      className={`p-1.5 transition-colors hover:text-primary-500 ${useDarkControls ? 'text-slate-200' : 'text-slate-400 dark:text-slate-300'}`}
+                      style={{ color: (miniPlayerThemeColor && !useDarkControls) ? (isLight(miniPlayerThemeColor) ? '#475569' : setAlpha(miniPlayerThemeColor, 0.6)) : undefined }}
                     >
                       <SkipForward size={16} fill="currentColor" />
                     </button>
                     <button 
-                      onClick={() => { 
-                          if (mediaRef.current) {
-                              const current = usePlayerStore.getState().currentTime;
-                              const newTime = current + 15;
-                              performSeek(newTime);
-                          }
-                      }}
-                      className="p-1.5 text-slate-400 transition-colors hover:text-primary-500"
-                      style={{ color: themeColor ? (isLight(themeColor) ? '#475569' : themeColor.replace('0.15', '0.6').replace('0.1', '0.6')) : undefined }}
+                      onClick={() => { if (audioRef.current) audioRef.current.currentTime += 30; }}
+                      className={`p-1.5 transition-colors hover:text-primary-500 ${useDarkControls ? 'text-slate-200' : 'text-slate-400 dark:text-slate-300'}`}
+                      style={{ color: (miniPlayerThemeColor && !useDarkControls) ? (isLight(miniPlayerThemeColor) ? '#475569' : setAlpha(miniPlayerThemeColor, 0.6)) : undefined }}
                     >
                       <RotateCw size={16} />
                     </button>
@@ -1561,8 +1195,8 @@ const Player: React.FC = () => {
                 {!isWidgetMode && (
                   <button 
                     onClick={() => setIsCollapsed(true)}
-                    className="p-2 text-slate-400 transition-colors"
-                    style={{ color: themeColor ? (isLight(themeColor) ? '#475569' : themeColor.replace('0.15', '0.6').replace('0.1', '0.6')) : undefined }}
+                    className={`p-2 transition-colors ${useDarkControls ? 'text-slate-200 hover:text-white' : 'text-slate-400 dark:text-slate-300'}`}
+                    style={{ color: (miniPlayerThemeColor && !useDarkControls) ? (isLight(miniPlayerThemeColor) ? '#475569' : setAlpha(miniPlayerThemeColor, 0.6)) : undefined }}
                     title="收起播放器"
                   >
                     <ChevronLeft size={24} />
@@ -1573,28 +1207,85 @@ const Player: React.FC = () => {
 
             {/* Desktop Extra Controls - Visible on Tablet and Desktop */}
             <div className="hidden md:flex items-center gap-4 lg:gap-6 min-w-[100px] lg:min-w-[140px] justify-end">
+              {/* Volume Control */}
+              <div className="relative" ref={!isExpanded ? volumeControlRef : null}>
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowVolumeControl(!showVolumeControl);
+                  }}
+                  className={`transition-colors p-1 hover:scale-110 flex items-center gap-1 ${useDarkControls ? 'text-slate-200 hover:text-white' : 'text-slate-400 dark:text-slate-300'}`}
+                  style={{ color: (miniPlayerThemeColor && !useDarkControls) ? (isLight(miniPlayerThemeColor) ? '#475569' : setAlpha(miniPlayerThemeColor, 0.6)) : undefined }}
+                  title="音量"
+                >
+                  {isMuted || volume === 0 ? (
+                    <VolumeX size={20} />
+                  ) : (
+                    <Volume2 size={20} />
+                  )}
+                </button>
+
+                {showVolumeControl && (
+                  <div 
+                    className="absolute bottom-full mb-3 left-1/2 -translate-x-1/2 bg-white dark:bg-slate-800 shadow-xl rounded-full py-4 border border-slate-100 dark:border-slate-700 w-12 flex flex-col items-center gap-3 z-[220] animate-in zoom-in-95 duration-200 cursor-default"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <span className="text-[10px] font-bold text-slate-500 min-w-[24px] text-center select-none">
+                      {Math.round(volume * 100)}
+                    </span>
+                    
+                    <div className="h-24 w-full flex items-center justify-center relative">
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="1" 
+                        step="0.01"
+                        value={volume}
+                        onChange={(e) => {
+                          setVolume(parseFloat(e.target.value));
+                          if (isMuted && parseFloat(e.target.value) > 0) setIsMuted(false);
+                        }}
+                        className="absolute w-24 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-primary-600 -rotate-90 hover:accent-primary-500"
+                      />
+                    </div>
+
+                    <button
+                      onClick={() => setIsMuted(!isMuted)}
+                      className={`p-2 rounded-full transition-colors ${
+                        isMuted 
+                          ? 'bg-primary-100 text-primary-600 dark:bg-primary-900/30' 
+                          : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
+                      }`}
+                      title={isMuted ? "取消静音" : "静音"}
+                    >
+                      {isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+                    </button>
+                  </div>
+                )}
+              </div>
+
               <button 
                 onClick={() => setPlaybackSpeed(playbackSpeed === 2 ? 1 : playbackSpeed + 0.25)} 
-                className="text-[10px] font-bold px-2 py-1 rounded transition-colors"
+                className={`text-[10px] font-bold px-2 py-1 rounded transition-colors ${useDarkControls ? 'text-slate-200 hover:text-white' : 'dark:text-slate-300'}`}
                 style={{ 
-                  backgroundColor: themeColor ? themeColor.replace('0.15', '0.1').replace('0.1', '0.1') : undefined,
-                  color: themeColor ? (isLight(themeColor) ? '#475569' : themeColor.replace('0.15', '0.8').replace('0.1', '0.8')) : undefined
+                  backgroundColor: (miniPlayerThemeColor && !useDarkControls) ? setAlpha(miniPlayerThemeColor, 0.1) : undefined,
+                  color: (miniPlayerThemeColor && !useDarkControls) ? (isLight(miniPlayerThemeColor) ? '#475569' : setAlpha(miniPlayerThemeColor, 0.8)) : undefined
                 }}
               >
                 {playbackSpeed}x
               </button>
               <button 
                 onClick={() => setIsCollapsed(true)} 
-                className="text-slate-400 transition-colors p-1 hover:scale-110"
-                style={{ color: themeColor ? (isLight(themeColor) ? '#475569' : themeColor.replace('0.15', '0.6').replace('0.1', '0.6')) : undefined }}
+                className={`transition-colors p-1 hover:scale-110 ${useDarkControls ? 'text-slate-200 hover:text-white' : 'text-slate-400 dark:text-slate-300'}`}
+                style={{ color: (miniPlayerThemeColor && !useDarkControls) ? (isLight(miniPlayerThemeColor) ? '#475569' : setAlpha(miniPlayerThemeColor, 0.6)) : undefined }}
                 title="收起播放器"
               >
                 <ChevronLeft size={20} />
               </button>
               <button 
                 onClick={() => setIsExpanded(true)} 
-                className="text-slate-400 transition-colors p-1 hover:scale-110"
-                style={{ color: themeColor ? (isLight(themeColor) ? '#475569' : themeColor.replace('0.15', '0.6').replace('0.1', '0.6')) : undefined }}
+                className={`transition-colors p-1 hover:scale-110 ${useDarkControls ? 'text-slate-200 hover:text-white' : 'text-slate-400 dark:text-slate-300'}`}
+                style={{ color: (miniPlayerThemeColor && !useDarkControls) ? (isLight(miniPlayerThemeColor) ? '#475569' : setAlpha(miniPlayerThemeColor, 0.6)) : undefined }}
                 title="展开播放器"
               >
                 <Maximize2 size={20} />
@@ -1608,8 +1299,8 @@ const Player: React.FC = () => {
       {/* Expanded Player View */}
       {isExpanded && (
         <div 
-          className="absolute inset-0 flex flex-col px-4 pt-[calc(3rem+env(safe-area-inset-top))] pb-40 sm:p-8 md:p-12 overflow-y-auto animate-in slide-in-from-bottom duration-500 xl:pb-12"
-          style={{ backgroundColor: isWidgetMode ? (themeColor ? toSolidColor(themeColor) : '#1e293b') : (themeColor || '#F2EDE4') }}
+          className="absolute inset-0 flex flex-col px-4 pt-[calc(3rem+env(safe-area-inset-top))] pb-40 sm:p-8 md:p-12 overflow-y-auto animate-in slide-in-from-bottom duration-500 xl:pb-12 bg-white dark:bg-slate-950"
+          style={{ backgroundColor: isWidgetMode ? (effectiveThemeColor ? toSolidColor(effectiveThemeColor) : '#1e293b') : (effectiveThemeColor ? setAlpha(effectiveThemeColor, 0.05) : undefined) }}
         >
           {/* Header */}
           <div className="flex items-center justify-between w-full max-w-4xl mx-auto mb-4 sm:mb-8 bg-white/60 dark:bg-slate-900/60 backdrop-blur-md p-2 sm:p-3 rounded-2xl shadow-sm border border-slate-200/30 dark:border-slate-800/30">
@@ -1628,21 +1319,43 @@ const Player: React.FC = () => {
                 onClick={() => {
                   // Calculate group index for current chapter
                   if (currentChapter && chapters.length > 0) {
+                    // Determine if target chapter is in main or extra
                     const isExtra = !!currentChapter.isExtra || /番外|SP|Extra/i.test(currentChapter.title);
                     const targetTab = isExtra ? 'extra' : 'main';
                     if (activeTab !== targetTab) setActiveTab(targetTab);
 
                     const targetList = chapters.filter(c => {
                          const cIsExtra = !!c.isExtra || /番外|SP|Extra/i.test(c.title);
-                         return cIsExtra === isExtra;
+                         return (cIsExtra === isExtra);
                     });
-
+                    
                     const index = targetList.findIndex(c => c.id === currentChapter.id);
                     if (index !== -1) {
-                        const groupIndex = Math.floor(index / chaptersPerGroup);
-                        if (currentGroupIndex !== groupIndex) {
-                            setCurrentGroupIndex(groupIndex);
+                      const groupIndex = Math.floor(index / chaptersPerGroup);
+                      setCurrentGroupIndex(groupIndex);
+                      
+                      // Auto scroll to current chapter and group tab
+                      setTimeout(() => {
+                        // 1. Scroll to chapter
+                        const chapterEl = document.getElementById(`player-chapter-${currentChapter.id}`);
+                        if (chapterEl) {
+                          chapterEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
                         }
+
+                        // 2. Scroll group tab into view
+                        const groupTab = document.getElementById(`player-group-tab-${groupIndex}`);
+                        const container = scrollRef.current;
+                        if (groupTab && container) {
+                          const containerWidth = container.offsetWidth;
+                          const tabWidth = groupTab.offsetWidth;
+                          const tabLeft = groupTab.offsetLeft;
+                          
+                          container.scrollTo({
+                            left: tabLeft - containerWidth / 2 + tabWidth / 2,
+                            behavior: 'smooth'
+                          });
+                        }
+                      }, 100);
                     }
                   }
                   setShowChapters(true);
@@ -1664,12 +1377,12 @@ const Player: React.FC = () => {
           <div className="flex-1 flex flex-col items-center justify-center max-w-4xl mx-auto w-full gap-4 sm:gap-8">
             <div className="w-full max-w-[240px] sm:max-w-[320px] lg:max-w-[400px] aspect-square rounded-[32px] sm:rounded-[40px] overflow-hidden shadow-2xl border-4 sm:border-8 border-white dark:border-slate-800 transition-all duration-500">
               <img 
-                src={coverUrl} 
+                src={getCoverUrl(currentBook?.coverUrl, currentBook?.libraryId, currentBook?.id)} 
                 alt={currentBook?.title}
-                crossOrigin="anonymous"
+                referrerPolicy="no-referrer"
                 className="w-full h-full object-cover"
                 onError={(e) => {
-                  (e.target as HTMLImageElement).src = '/logo.png';
+                  (e.target as HTMLImageElement).src = 'https://placehold.co/300x400?text=No+Cover';
                 }}
               />
             </div>
@@ -1732,7 +1445,7 @@ const Player: React.FC = () => {
                             step="0.01"
                             value={volume}
                             onChange={(e) => {
-                              usePlayerStore.getState().setVolume(parseFloat(e.target.value));
+                              setVolume(parseFloat(e.target.value));
                               if (isMuted && parseFloat(e.target.value) > 0) setIsMuted(false);
                             }}
                             className="absolute w-24 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-primary-600 -rotate-90 hover:accent-primary-500"
@@ -1759,14 +1472,8 @@ const Player: React.FC = () => {
               {/* Main Controls */}
               <div className="flex items-center justify-center gap-4 sm:gap-10 md:gap-14">
                 <button 
-                  onClick={() => { 
-                      if (mediaRef.current) {
-                          const current = usePlayerStore.getState().currentTime;
-                          const newTime = Math.max(0, current - 15);
-                          performSeek(newTime);
-                      }
-                  }}
-                  className="text-[#4A3728] dark:text-slate-400 p-1.5 sm:p-2 hover:scale-110 transition-transform"
+                  onClick={() => { if (audioRef.current) audioRef.current.currentTime -= 15; }}
+                  className="text-slate-600 dark:text-slate-400 p-1.5 sm:p-2 hover:scale-110 transition-transform"
                 >
                   <div className="relative">
                     <RotateCcw size={24} className="sm:w-8 sm:h-8" />
@@ -1775,34 +1482,31 @@ const Player: React.FC = () => {
                 </button>
                 <button 
                   onClick={prevChapter}
-                  className="text-[#0F172A] dark:text-white p-1.5 sm:p-2 hover:scale-110 transition-transform"
+                  className="text-slate-900 dark:text-white p-1.5 sm:p-2 hover:scale-110 transition-transform"
                 >
                   <SkipBack size={28} className="sm:w-9 sm:h-9" fill="currentColor" />
                 </button>
                 
                 <button 
                   onClick={togglePlay}
-                  className="w-16 h-16 sm:w-24 sm:h-24 rounded-full bg-[#2D1B10] dark:bg-primary-600 text-white flex items-center justify-center shadow-2xl transform hover:scale-105 active:scale-95 transition-all"
-                  style={themeColor ? { backgroundColor: toSolidColor(themeColor) } : {}}
+                  className={`w-16 h-16 sm:w-24 sm:h-24 rounded-full text-white flex items-center justify-center shadow-2xl transform hover:scale-105 active:scale-95 transition-all ${!effectiveThemeColor ? 'bg-primary-600' : ''}`}
+                  style={effectiveThemeColor ? { 
+                    backgroundColor: toSolidColor(effectiveThemeColor),
+                    color: isLight(effectiveThemeColor) ? '#475569' : '#ffffff'
+                  } : {}}
                 >
                   {isPlaying ? <Pause size={32} className="sm:w-12 sm:h-12" fill="currentColor" /> : <Play size={32} className="sm:w-12 sm:h-12 ml-1 sm:ml-2" fill="currentColor" />}
                 </button>
 
                 <button 
                   onClick={nextChapter}
-                  className="text-[#0F172A] dark:text-white p-1.5 sm:p-2 hover:scale-110 transition-transform"
+                  className="text-slate-900 dark:text-white p-1.5 sm:p-2 hover:scale-110 transition-transform"
                 >
                   <SkipForward size={28} className="sm:w-9 sm:h-9" fill="currentColor" />
                 </button>
                 <button 
-                  onClick={() => { 
-                      if (mediaRef.current) {
-                          const current = usePlayerStore.getState().currentTime;
-                          const newTime = current + 15;
-                          performSeek(newTime);
-                      }
-                  }}
-                  className="text-[#4A3728] dark:text-slate-400 p-1.5 sm:p-2 hover:scale-110 transition-transform"
+                  onClick={() => { if (audioRef.current) audioRef.current.currentTime += 15; }}
+                  className="text-slate-600 dark:text-slate-400 p-1.5 sm:p-2 hover:scale-110 transition-transform"
                 >
                   <div className="relative">
                     <RotateCw size={24} className="sm:w-8 sm:h-8" />
@@ -1812,7 +1516,7 @@ const Player: React.FC = () => {
               </div>
 
               {/* Bottom Row Controls */}
-              <div className="flex justify-between items-center max-w-2xl mx-auto w-full px-2 sm:px-4 text-[#4A3728] dark:text-slate-400">
+              <div className="flex justify-between items-center max-w-2xl mx-auto w-full px-2 sm:px-4 text-slate-600 dark:text-slate-400">
                 <button 
                   onClick={() => setPlaybackSpeed(playbackSpeed >= 2 ? 0.5 : playbackSpeed + 0.25)}
                   className="flex flex-col items-center gap-1 sm:gap-1.5 transition-all active:scale-95 group relative"
@@ -1822,6 +1526,8 @@ const Player: React.FC = () => {
                   </div>
                   <span className="text-[10px] sm:text-xs font-bold">{playbackSpeed}x</span>
                 </button>
+
+
 
                 <div className="flex flex-col items-center gap-1 sm:gap-1.5">
                   <div className="p-2">
@@ -1860,7 +1566,10 @@ const Player: React.FC = () => {
                           <button
                             key={mins}
                             onClick={() => {
-                              setSleepTimer(mins * 60);
+                              const duration = mins * 60;
+                              const endTime = Date.now() + duration * 1000;
+                              sleepTimerEndTimeRef.current = endTime;
+                              setSleepTimer(duration);
                               setShowSleepTimer(false);
                             }}
                             className="px-3 py-2 text-xs sm:text-sm rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-400 transition-colors border border-transparent hover:border-slate-200 dark:hover:border-slate-600"
@@ -1888,7 +1597,10 @@ const Player: React.FC = () => {
                           onClick={() => {
                             const mins = parseInt(customMinutes);
                             if (mins > 0) {
-                              setSleepTimer(mins * 60);
+                              const duration = mins * 60;
+                              const endTime = Date.now() + duration * 1000;
+                              sleepTimerEndTimeRef.current = endTime;
+                              setSleepTimer(duration);
                               setShowSleepTimer(false);
                               setCustomMinutes('');
                             }
@@ -1902,6 +1614,11 @@ const Player: React.FC = () => {
                       <button
                         onClick={() => {
                           setSleepTimer(null);
+                          sleepTimerEndTimeRef.current = null;
+                          if (sleepTimerIntervalRef.current) {
+                            clearInterval(sleepTimerIntervalRef.current);
+                            sleepTimerIntervalRef.current = null;
+                          }
                           setShowSleepTimer(false);
                         }}
                         className="mt-2 px-4 py-2 text-xs sm:text-sm font-bold rounded-xl bg-red-50 dark:bg-red-900/20 text-red-500 transition-colors"
@@ -1922,7 +1639,7 @@ const Player: React.FC = () => {
               <div className="relative w-full max-w-sm bg-white dark:bg-slate-900 rounded-[32px] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
                 <div className="p-6 sm:p-8">
                   <div className="flex items-center justify-between mb-6">
-                    <h3 className="text-xl font-bold dark:text-white text-[#4A3728]">播放设置</h3>
+                    <h3 className="text-xl font-bold text-slate-900 dark:text-white">播放设置</h3>
                     <button onClick={() => setShowSettings(false)} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full">
                       <X size={20} className="text-slate-400" />
                     </button>
@@ -2025,22 +1742,119 @@ const Player: React.FC = () => {
                   </button>
                 </div>
 
-                <ChapterList 
-                  chapters={chapters}
-                  currentChapter={currentChapter}
-                  currentBook={currentBook}
-                  isPlaying={isPlaying}
-                  themeColor={themeColor}
-                  currentGroupIndex={currentGroupIndex}
-                  onGroupChange={setCurrentGroupIndex}
-                  onPlayChapter={playChapter}
-                  onClose={() => setShowChapters(false)}
-                  activeTab={activeTab}
-                  onTabChange={(tab) => {
-                      setActiveTab(tab);
-                      setCurrentGroupIndex(0);
-                  }}
-                />
+                {groups.length > 1 && (
+                  <div className="relative group/nav border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex items-center">
+                    <button 
+                      onClick={() => scrollGroups('left')}
+                      className="absolute -left-4 sm:-left-7 top-1/2 -translate-y-1/2 z-10 p-1 bg-white/90 dark:bg-slate-800/90 backdrop-blur shadow-md rounded-full opacity-0 group-hover/nav:opacity-100 transition-opacity hidden sm:block border border-slate-100 dark:border-slate-700"
+                    >
+                      <ChevronLeft size={20} className="text-slate-600 dark:text-slate-400" />
+                    </button>
+                    <div 
+                      ref={scrollRef}
+                      className="flex gap-2 p-4 overflow-x-auto no-scrollbar scroll-smooth snap-x mx-1 w-full"
+                    >
+                      {groups.map((group, index) => (
+                        <button
+                          key={index}
+                          id={`player-group-tab-${index}`}
+                          onClick={() => setCurrentGroupIndex(index)}
+                          className={`px-4 py-2 rounded-xl text-sm font-bold transition-all border shrink-0 snap-start ${
+                            currentGroupIndex === index
+                              ? `text-white shadow-lg shadow-primary-500/30 ${!effectiveThemeColor ? 'bg-primary-600 border-primary-600' : ''}`
+                              : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700'
+                          }`}
+                          style={currentGroupIndex === index ? { 
+                            backgroundColor: effectiveThemeColor ? toSolidColor(effectiveThemeColor) : undefined,
+                            borderColor: effectiveThemeColor ? toSolidColor(effectiveThemeColor) : undefined,
+                            color: (effectiveThemeColor && isLight(effectiveThemeColor)) ? '#475569' : (effectiveThemeColor ? '#ffffff' : undefined)
+                          } : {}}
+                        >
+                          第 {group.start}-{group.end} 章
+                        </button>
+                      ))}
+                    </div>
+                    <button 
+                      onClick={() => scrollGroups('right')}
+                      className="absolute -right-4 sm:-right-7 top-1/2 -translate-y-1/2 z-10 p-1 bg-white/90 dark:bg-slate-800/90 backdrop-blur shadow-md rounded-full opacity-0 group-hover/nav:opacity-100 transition-opacity hidden sm:block border border-slate-100 dark:border-slate-700"
+                    >
+                      <ChevronLeft size={20} className="rotate-180 text-slate-600 dark:text-slate-400" />
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                  {(groups[currentGroupIndex]?.chapters || currentChapters).map((chapter, index) => {
+                    const actualIndex = currentGroupIndex * chaptersPerGroup + index;
+                    const isCurrent = currentChapter?.id === chapter.id;
+                    
+                    return (
+                      <div 
+                        key={chapter.id}
+                        id={`player-chapter-${chapter.id}`}
+                        onClick={() => {
+                          playChapter(currentBook!, currentChapters, chapter);
+                          setShowChapters(false);
+                        }}
+                        className={`group flex items-center justify-between p-4 rounded-2xl cursor-pointer transition-all border ${
+                          isCurrent 
+                            ? 'bg-opacity-10 border-opacity-20' 
+                            : 'bg-white dark:bg-slate-900 border-slate-100 dark:border-slate-800 hover:border-primary-200 dark:hover:border-primary-800'
+                        }`}
+                        style={isCurrent ? { 
+                          backgroundColor: effectiveThemeColor ? setAlpha(effectiveThemeColor, 0.1) : undefined,
+                          borderColor: effectiveThemeColor ? setAlpha(effectiveThemeColor, 0.3) : undefined,
+                        } : {}}
+                      >
+                        <div className="flex items-center gap-4 min-w-0">
+                          <div 
+                            className={`w-10 h-10 sm:w-12 sm:h-12 rounded-xl flex items-center justify-center font-bold text-base sm:text-lg shrink-0 ${
+                              isCurrent ? `text-white ${!effectiveThemeColor ? 'bg-primary-600' : ''}` : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
+                            }`}
+                            style={isCurrent ? { 
+                              backgroundColor: effectiveThemeColor ? toSolidColor(effectiveThemeColor) : undefined,
+                              color: (effectiveThemeColor && isLight(effectiveThemeColor)) ? '#475569' : (effectiveThemeColor ? '#ffffff' : undefined)
+                            } : {}}
+                          >
+                            {chapter.chapterIndex || (actualIndex + 1)}
+                          </div>
+                          <div className="min-w-0">
+                            <p 
+                              className={`text-sm sm:text-base font-bold truncate ${isCurrent ? '' : 'text-slate-900 dark:text-white'}`}
+                              style={isCurrent ? { color: effectiveThemeColor ? toSolidColor(effectiveThemeColor) : undefined } : {}}
+                            >
+                              {chapter.title}
+                            </p>
+                            <div className="flex items-center gap-3 mt-1">
+                              <div className="flex items-center gap-1 text-[10px] sm:text-xs text-slate-400 font-medium">
+                                <Clock size={12} />
+                                {formatTime(chapter.duration)}
+                              </div>
+                              {getChapterProgressText(chapter) && (
+                                <div 
+                                  className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${
+                                    getChapterProgressText(chapter) === '已播完' 
+                                      ? 'bg-green-50 text-green-500 dark:bg-green-900/20' 
+                                      : 'bg-primary-50 text-primary-600 dark:bg-primary-900/20'
+                                  }`}
+                                >
+                                  {getChapterProgressText(chapter)}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        {isCurrent && isPlaying && (
+                          <div className="flex gap-1 items-end h-5">
+                            <div className={`w-1 animate-music-bar-1 rounded-full ${!effectiveThemeColor ? 'bg-primary-600' : ''}`} style={{ backgroundColor: effectiveThemeColor ? toSolidColor(effectiveThemeColor) : undefined }}></div>
+                            <div className={`w-1 animate-music-bar-2 rounded-full ${!effectiveThemeColor ? 'bg-primary-600' : ''}`} style={{ backgroundColor: effectiveThemeColor ? toSolidColor(effectiveThemeColor) : undefined }}></div>
+                            <div className={`w-1 animate-music-bar-3 rounded-full ${!effectiveThemeColor ? 'bg-primary-600' : ''}`} style={{ backgroundColor: effectiveThemeColor ? toSolidColor(effectiveThemeColor) : undefined }}></div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           )}

@@ -1,17 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Book, Chapter } from '../types';
-
-type ChapterProgressMeta = {
-  progressUpdatedAt?: string;
-  progressPosition?: number;
-};
-
-const getProgressUpdatedAt = (chapter: Chapter) => (chapter as Chapter & ChapterProgressMeta).progressUpdatedAt;
-const getProgressPosition = (chapter: Chapter) => {
-  const value = (chapter as Chapter & ChapterProgressMeta).progressPosition;
-  return typeof value === 'number' ? value : 0;
-};
+import { isTooLight } from '../utils/color';
 
 interface PlayerState {
   currentBook: Book | null;
@@ -26,13 +16,11 @@ interface PlayerState {
   isExpanded: boolean;
   isCollapsed: boolean;
   isSeriesEditing: boolean;
-  chapterProgress: Record<string, number>;
-  clientAutoDownload: boolean;
+  ignoreAudioFocus: boolean;
   
   // Actions
   playBook: (book: Book, chapters: Chapter[], startChapterId?: string) => void;
   togglePlay: () => void;
-  setClientAutoDownload: (enabled: boolean) => void;
   setCurrentTime: (time: number) => void;
   setDuration: (duration: number) => void;
   setPlaybackSpeed: (speed: number) => void;
@@ -45,6 +33,7 @@ interface PlayerState {
   setIsExpanded: (isExpanded: boolean) => void;
   setIsCollapsed: (isCollapsed: boolean) => void;
   setIsSeriesEditing: (isSeriesEditing: boolean) => void;
+  setIgnoreAudioFocus: (ignore: boolean) => void;
 }
 
 export const usePlayerStore = create<PlayerState>()(
@@ -58,33 +47,29 @@ export const usePlayerStore = create<PlayerState>()(
       currentTime: 0,
       playbackSpeed: 1.0,
       volume: 1.0,
-      themeColor: '#F2EDE4',
+      themeColor: '#F2EDE4', // Default background color
       isExpanded: false,
       isCollapsed: false,
       isSeriesEditing: false,
-      chapterProgress: {},
-      clientAutoDownload: false,
+      ignoreAudioFocus: false,
 
-      setClientAutoDownload: (enabled) => set({ clientAutoDownload: enabled }),
+      setIgnoreAudioFocus: (ignore) => set({ ignoreAudioFocus: ignore }),
       setIsPlaying: (isPlaying) => set({ isPlaying }),
       setIsExpanded: (isExpanded) => set({ isExpanded }),
       setIsCollapsed: (isCollapsed) => set({ isCollapsed }),
       setIsSeriesEditing: (isSeriesEditing) => set({ isSeriesEditing }),
 
       playBook: (book, chapters, startChapterId) => {
-        const isOffline = typeof window !== 'undefined' && (!navigator.onLine || window.location.hash.includes('/offline'));
+        // If no startChapterId is provided, find the most recently played chapter
         let chapter;
-        const { chapterProgress } = get();
-        
         if (startChapterId) {
           chapter = chapters.find(c => c.id === startChapterId) || chapters[0];
         } else {
-          const playedChapters = [...chapters].filter(c => !!getProgressUpdatedAt(c));
+          // Sort by progressUpdatedAt descending and take the first one that has progress
+          const playedChapters = [...chapters].filter(c => c.progressUpdatedAt);
           if (playedChapters.length > 0) {
             playedChapters.sort((a, b) => {
-              const dateA = new Date(getProgressUpdatedAt(a)!);
-              const dateB = new Date(getProgressUpdatedAt(b)!);
-              return dateB.getTime() - dateA.getTime();
+              return new Date(b.progressUpdatedAt!).getTime() - new Date(a.progressUpdatedAt!).getTime();
             });
             chapter = playedChapters[0];
           } else {
@@ -92,19 +77,18 @@ export const usePlayerStore = create<PlayerState>()(
           }
         }
         
-        const progress = isOffline ? (chapterProgress[chapter.id] ?? getProgressPosition(chapter)) : getProgressPosition(chapter);
-
         const newState: Partial<PlayerState> = { 
           currentBook: book, 
           chapters, 
           currentChapter: chapter,
           isPlaying: true,
-          currentTime: progress,
-          duration: chapter.duration || 0
+          currentTime: chapter.progressPosition || 0
         };
 
-        if (book.themeColor) {
+        if (book.themeColor && !isTooLight(book.themeColor)) {
           newState.themeColor = book.themeColor;
+        } else {
+          newState.themeColor = '#F2EDE4'; // Reset to default
         }
 
         set(newState);
@@ -112,11 +96,7 @@ export const usePlayerStore = create<PlayerState>()(
 
       togglePlay: () => set((state) => ({ isPlaying: !state.isPlaying })),
       
-      setCurrentTime: (time) => set((state) => {
-        const isOffline = typeof window !== 'undefined' && (!navigator.onLine || window.location.hash.includes('/offline'));
-        if (!isOffline || !state.currentChapter) return { currentTime: time };
-        return { currentTime: time, chapterProgress: { ...state.chapterProgress, [state.currentChapter.id]: time } };
-      }),
+      setCurrentTime: (time) => set({ currentTime: time }),
       
       setDuration: (duration) => set({ duration }),
       
@@ -127,104 +107,55 @@ export const usePlayerStore = create<PlayerState>()(
       setThemeColor: (color) => set({ themeColor: color }),
 
       nextChapter: () => {
-        const { currentChapter, chapters, chapterProgress } = get();
-        if (!currentChapter) return;
+        const { currentChapter, chapters, currentBook } = get();
+        if (!currentChapter || !currentBook) return;
+        
+        // 确保 chapters 数组不为空且包含当前章节
+        if (chapters.length === 0 || !chapters.some(c => c.id === currentChapter.id)) {
+          console.warn('Chapters array is empty or does not contain current chapter, cannot proceed to next chapter');
+          return;
+        }
+        
         const index = chapters.findIndex(c => c.id === currentChapter.id);
-        if (index < chapters.length - 1) {
+        if (index !== -1 && index < chapters.length - 1) {
           const nextChapter = chapters[index + 1];
-          const isOffline = typeof window !== 'undefined' && (!navigator.onLine || window.location.hash.includes('/offline'));
-          let progress = isOffline ? (chapterProgress[nextChapter.id] ?? getProgressPosition(nextChapter)) : getProgressPosition(nextChapter);
-          const duration = nextChapter.duration || 0;
-
-          if (duration > 0 && progress > 0) {
-              const timeLeft = duration - progress;
-              if (timeLeft < 5 || (progress / duration) > 0.99) {
-                  progress = 0;
-              }
-          }
-
-          set({ 
-            currentChapter: nextChapter, 
-            currentTime: progress,
-            duration: nextChapter.duration || 0,
-            isPlaying: true
-          });
+          get().playChapter(currentBook, chapters, nextChapter);
         }
       },
 
       prevChapter: () => {
-        const { currentChapter, chapters, chapterProgress } = get();
-        if (!currentChapter) return;
+        const { currentChapter, chapters, currentBook } = get();
+        if (!currentChapter || !currentBook) return;
         const index = chapters.findIndex(c => c.id === currentChapter.id);
         if (index > 0) {
           const prevChapter = chapters[index - 1];
-          const isOffline = typeof window !== 'undefined' && (!navigator.onLine || window.location.hash.includes('/offline'));
-          let progress = isOffline ? (chapterProgress[prevChapter.id] ?? getProgressPosition(prevChapter)) : getProgressPosition(prevChapter);
-          const duration = prevChapter.duration || 0;
-
-          if (duration > 0 && progress > 0) {
-              const timeLeft = duration - progress;
-              if (timeLeft < 5 || (progress / duration) > 0.99) {
-                  progress = 0;
-              }
-          }
-          
-          set({ 
-            currentChapter: prevChapter, 
-            currentTime: progress,
-            duration: prevChapter.duration || 0,
-            isPlaying: true
-          });
+          get().playChapter(currentBook, chapters, prevChapter);
         }
       },
 
       playChapter: (book, chapters, chapter, resumePosition) => {
-        const { chapterProgress } = get();
-        const isOffline = typeof window !== 'undefined' && (!navigator.onLine || window.location.hash.includes('/offline'));
-        let startTime = 0;
-        if (resumePosition !== undefined) {
-            startTime = resumePosition;
-        } else {
-            startTime = isOffline ? (chapterProgress[chapter.id] ?? getProgressPosition(chapter)) : getProgressPosition(chapter);
-            
-            const duration = chapter.duration || 0;
-            if (duration > 0 && startTime > 0) {
-                 const timeLeft = duration - startTime;
-                 if (timeLeft < 5 || (startTime / duration) > 0.99) {
-                     startTime = 0;
-                 }
-            }
-        }
-
         const newState: Partial<PlayerState> = { 
           currentBook: book, 
           chapters, 
           currentChapter: chapter, 
           isPlaying: true, 
-          currentTime: startTime,
-          duration: chapter.duration || 0
+          currentTime: resumePosition ?? (chapter.progressPosition || 0)
         };
-
-        if (book.themeColor) {
+        
+        if (book.themeColor && !isTooLight(book.themeColor)) {
           newState.themeColor = book.themeColor;
+        } else {
+          newState.themeColor = '#F2EDE4'; // Reset to default
         }
 
         set(newState);
-      },
+      }
     }),
     {
-      name: 'offline-progress-storage',
-      partialize: (state) => ({ 
-        chapterProgress: state.chapterProgress,
-        playbackSpeed: state.playbackSpeed,
-        volume: state.volume,
-        themeColor: state.themeColor,
-        clientAutoDownload: state.clientAutoDownload,
-        // Persist current book info to restore player state on restart
-        currentBook: state.currentBook,
-        currentChapter: state.currentChapter,
-        currentTime: state.currentTime,
-        duration: state.duration
+      name: 'player-storage',
+      partialize: (state) => ({
+        ignoreAudioFocus: state.ignoreAudioFocus,
+        chapterProgress: state.chapterProgress
       })
     }
   )

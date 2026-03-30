@@ -23,21 +23,15 @@ import {
   Loader2,
   Trash2,
   AlertTriangle,
-  RefreshCw,
   Settings,
+  RefreshCw,
   Wand2,
   FileSignature
 } from 'lucide-react';
 import { getCoverUrl } from '../utils/image';
 import { useAuthStore } from '../store/authStore';
 import ExpandableTitle from '../components/ExpandableTitle';
-import { setAlpha, toSolidColor } from '../utils/color';
-
-type ChapterProgressMeta = {
-  progressUpdatedAt?: string;
-};
-
-const getProgressUpdatedAt = (chapter: Chapter) => (chapter as Chapter & ChapterProgressMeta).progressUpdatedAt;
+import { setAlpha, toSolidColor, isLight, isTooLight } from '../utils/color';
 
 const BookDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -54,7 +48,22 @@ const BookDetailPage: React.FC = () => {
   const [deleteSourceFiles, setDeleteSourceFiles] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [editData, setEditData] = useState<Partial<Book>>({});
-  
+  const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
+  const [isOverflowing, setIsOverflowing] = useState(false);
+  const [activeTab, setActiveTab] = useState<'main' | 'extra'>('main');
+  const [currentGroupIndex, setCurrentGroupIndex] = useState(0);
+  const [themeColor, setThemeColor] = useState<string | null>(book?.theme_color || null);
+  const [isTagsExpanded, setIsTagsExpanded] = useState(false);
+  const tagsRef = useRef<HTMLDivElement>(null);
+  const [isTagsOverflowing, setIsTagsOverflowing] = useState(false);
+  const descriptionRef = useRef<HTMLParagraphElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const hasInitialScrolled = useRef(false);
+  const [highlightedChapterId, setHighlightedChapterId] = useState<string | null>(null);
+
+  // User Settings
+  const [coverShape, setCoverShape] = useState<'rect' | 'square'>('rect');
+
   // Regex Generator State
   const [showRegexGenerator, setShowRegexGenerator] = useState(false);
   const [genFilename, setGenFilename] = useState('');
@@ -85,34 +94,6 @@ const BookDetailPage: React.FC = () => {
     }
   };
 
-  const handleWriteMetadata = async () => {
-    try {
-      if (!confirm('确定要将当前元数据写入到音频文件吗？这可能需要一些时间。')) {
-        return;
-      }
-      await apiClient.post(`/api/books/${id}/write-metadata`);
-      alert('已开始后台写入元数据，请稍候查看任务进度。');
-    } catch (err) {
-      console.error('Failed to write metadata', err);
-      alert('写入失败');
-    }
-  };
-  const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
-  const [isOverflowing, setIsOverflowing] = useState(false);
-  const [activeTab, setActiveTab] = useState<'main' | 'extra'>('main');
-  const [currentGroupIndex, setCurrentGroupIndex] = useState(0);
-  const [themeColor, setThemeColor] = useState<string | null>(book?.themeColor || null);
-  const [isTagsExpanded, setIsTagsExpanded] = useState(false);
-  const tagsRef = useRef<HTMLDivElement>(null);
-  const [isTagsOverflowing, setIsTagsOverflowing] = useState(false);
-  const descriptionRef = useRef<HTMLParagraphElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const hasInitialScrolled = useRef(false);
-  const [highlightedChapterId, setHighlightedChapterId] = useState<string | null>(null);
-
-  // User Settings
-  const [coverShape, setCoverShape] = useState<'rect' | 'square'>('rect');
-
   // Reset scroll state when book ID changes
   useEffect(() => {
     hasInitialScrolled.current = false;
@@ -125,11 +106,18 @@ const BookDetailPage: React.FC = () => {
     if (currentChapter?.bookId === book?.id) {
       setHighlightedChapterId(null);
     }
-  }, [currentChapter?.id, currentChapter?.bookId, book?.id]);
-  
-  const playBook = usePlayerStore((state) => state.playBook);
-  const isPlaying = usePlayerStore((state) => state.isPlaying);
-  const playChapter = usePlayerStore((state) => state.playChapter);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentChapter?.id, book?.id]);
+
+  const scrollGroups = (direction: 'left' | 'right') => {
+    if (scrollRef.current) {
+      const scrollAmount = 200;
+      scrollRef.current.scrollBy({
+        left: direction === 'left' ? -scrollAmount : scrollAmount,
+        behavior: 'smooth'
+      });
+    }
+  };
 
   const { mainChapters, extraChapters } = React.useMemo(() => {
     return {
@@ -146,103 +134,23 @@ const BookDetailPage: React.FC = () => {
     for (let i = 0; i < currentChapters.length; i += chaptersPerGroup) {
       const slice = currentChapters.slice(i, i + chaptersPerGroup);
       g.push({
-        start: slice[0]?.chapterIndex || (i + 1),
-        end: slice[slice.length - 1]?.chapterIndex || (i + slice.length),
+        start: i + 1,
+        end: i + slice.length,
         chapters: slice
       });
     }
     return g;
   }, [currentChapters]);
 
-  // Resume chapter logic
-  const resumeChapter = React.useMemo(() => {
-    if (!book || chapters.length === 0) return null;
-    
-    // 1. Priority: Currently playing chapter if it belongs to this book
-    if (currentChapter && currentChapter.bookId === book.id) {
-      return currentChapter;
-    } 
-    // 2. Fallback: Most recently played chapter from history
-    const playedChapters = [...chapters].filter(c => !!getProgressUpdatedAt(c));
-    if (playedChapters.length > 0) {
-      playedChapters.sort((a, b) => {
-        return new Date(getProgressUpdatedAt(b) || 0).getTime() - new Date(getProgressUpdatedAt(a) || 0).getTime();
-      });
-      return playedChapters[0];
-    }
-    return null;
-  }, [book, chapters, currentChapter]);
-
-  const handlePlayClick = () => {
-    const targetChapter = resumeChapter || chapters[0];
-    if (!targetChapter) return;
-
-    // Determine if target chapter is in main or extra
-    const inMain = mainChapters.find(c => c.id === targetChapter.id);
-    const inExtra = extraChapters.find(c => c.id === targetChapter.id);
-    
-    let targetList = currentChapters;
-    let nextTab = activeTab;
-    
-    if (inMain) {
-      nextTab = 'main';
-      targetList = mainChapters;
-    } else if (inExtra) {
-      nextTab = 'extra';
-      targetList = extraChapters;
-    }
-
-    playBook(book!, targetList, targetChapter.id);
-
-    // Scroll logic
-    setHighlightedChapterId(targetChapter.id);
-
-    // Calculate group index
-    const index = targetList.findIndex(c => c.id === targetChapter.id);
-    if (index !== -1) {
-      const groupIndex = Math.floor(index / chaptersPerGroup);
-      
-      // Batch updates
-      if (nextTab !== activeTab) setActiveTab(nextTab);
-      if (currentGroupIndex !== groupIndex) setCurrentGroupIndex(groupIndex);
-      
-      // Scroll into view
-      setTimeout(() => {
-        const el = document.getElementById(`chapter-${targetChapter.id}`);
-        if (el) {
-          el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        }
-        
-        const groupTab = document.getElementById(`group-tab-${groupIndex}`);
-        const container = scrollRef.current;
-        if (groupTab && container) {
-          const containerWidth = container.offsetWidth;
-          const tabWidth = groupTab.offsetWidth;
-          const tabLeft = groupTab.offsetLeft;
-          
-          container.scrollTo({
-            left: tabLeft - containerWidth / 2 + tabWidth / 2,
-            behavior: 'smooth'
-          });
-        }
-      }, 300);
-    }
-  };
-
-  const scrollGroups = (direction: 'left' | 'right') => {
-    if (scrollRef.current) {
-      const scrollAmount = 200;
-      scrollRef.current.scrollBy({
-        left: direction === 'left' ? -scrollAmount : scrollAmount,
-        behavior: 'smooth'
-      });
-    }
-  };
+  const playBook = usePlayerStore((state) => state.playBook);
+  const isPlaying = usePlayerStore((state) => state.isPlaying);
+  const playChapter = usePlayerStore((state) => state.playChapter);
 
   useEffect(() => {
-    if (book?.themeColor) {
-      setThemeColor(book.themeColor);
+    if (book) {
+      setThemeColor(book.themeColor || null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [book?.themeColor]);
 
   useEffect(() => {
@@ -256,26 +164,127 @@ const BookDetailPage: React.FC = () => {
         ]);
         const fetchedBook = bookRes.data;
         setBook(fetchedBook);
-        if (fetchedBook.themeColor) {
-          setThemeColor(fetchedBook.themeColor);
-        }
         setChapters(chaptersRes.data);
-        setIsFavorite(bookRes.data.isFavorite);
+        setIsFavorite(fetchedBook.isFavorite);
         setCurrentGroupIndex(0); // Reset group index when book changes
-        
+
         // Load user settings
         const settings = settingsRes.data.settingsJson || {};
         if (settings.bookshelfCoverShape) {
           setCoverShape(settings.bookshelfCoverShape);
         }
       } catch (err) {
-        console.error('Failed to fetch book details', err);
+        console.error('获取书籍详情失败', err);
       } finally {
         setLoading(false);
       }
     };
     fetchBookDetails();
   }, [id]);
+
+  // Find the chapter to resume or highlight
+  const resumeChapter = React.useMemo(() => {
+    if (!book || chapters.length === 0) return null;
+
+    // 1. Priority: Currently playing chapter if it belongs to this book
+    if (currentChapter && currentChapter.bookId === book.id) {
+      return currentChapter;
+    } 
+    
+    // 2. Fallback: Most recently played chapter from history
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const playedChapters = [...chapters].filter(c => (c as any).progressUpdatedAt);
+    if (playedChapters.length > 0) {
+      playedChapters.sort((a, b) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return new Date((b as any).progressUpdatedAt).getTime() - new Date((a as any).progressUpdatedAt).getTime();
+      });
+      return playedChapters[0];
+    }
+    return null;
+  }, [book, chapters, currentChapter]);
+
+  // Auto-highlight current chapter logic (without scroll)
+  useEffect(() => {
+    if (book?.id !== id) return; 
+
+    if (resumeChapter) {
+      setHighlightedChapterId(resumeChapter.id);
+    }
+  }, [book?.id, id, resumeChapter]);
+
+  const doScroll = (chapterId: string, groupIndex: number) => {
+      const el = document.getElementById(`chapter-${chapterId}`);
+      if (el) {
+        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }
+      
+      const groupTab = document.getElementById(`group-tab-${groupIndex}`);
+      const container = scrollRef.current;
+      if (groupTab && container) {
+        const containerWidth = container.offsetWidth;
+        const tabWidth = groupTab.offsetWidth;
+        const tabLeft = groupTab.offsetLeft;
+        
+        container.scrollTo({
+          left: tabLeft - containerWidth / 2 + tabWidth / 2,
+          behavior: 'smooth'
+        });
+      }
+  };
+
+  const scrollToChapterElement = (chapterId: string, list: Chapter[]) => {
+      // Calculate group index
+      const index = list.findIndex(c => c.id === chapterId);
+      if (index !== -1) {
+        const groupIndex = Math.floor(index / chaptersPerGroup);
+        if (currentGroupIndex !== groupIndex) {
+          setCurrentGroupIndex(groupIndex);
+          // Wait for group switch
+          setTimeout(() => doScroll(chapterId, groupIndex), 100);
+          return;
+        }
+        doScroll(chapterId, groupIndex);
+      }
+  };
+
+  const handlePlayClick = () => {
+    if (resumeChapter) {
+      // If we have a resume chapter, play it and scroll to it
+      playChapter(book!, currentChapters, resumeChapter);
+      
+      // Scroll logic
+      const targetChapter = resumeChapter;
+      
+      // Determine if target chapter is in main or extra
+      const inMain = mainChapters.find(c => c.id === targetChapter.id);
+      const inExtra = extraChapters.find(c => c.id === targetChapter.id);
+      
+      let targetList = currentChapters;
+      
+      if (inMain) {
+        if (activeTab !== 'main') {
+          setActiveTab('main');
+          // Wait for tab switch then continue
+          setTimeout(() => scrollToChapterElement(targetChapter.id, mainChapters), 100);
+          return;
+        }
+        targetList = mainChapters;
+      } else if (inExtra) {
+        if (activeTab !== 'extra') {
+          setActiveTab('extra');
+          setTimeout(() => scrollToChapterElement(targetChapter.id, extraChapters), 100);
+          return;
+        }
+        targetList = extraChapters;
+      }
+      
+      scrollToChapterElement(targetChapter.id, targetList);
+    } else {
+      // Default play behavior
+      playBook(book!, currentChapters);
+    }
+  };
 
   useEffect(() => {
     const checkOverflow = () => {
@@ -322,7 +331,20 @@ const BookDetailPage: React.FC = () => {
       }
       setIsFavorite(!isFavorite);
     } catch (err) {
-      console.error('Failed to toggle favorite', err);
+      console.error('切换收藏状态失败', err);
+    }
+  };
+
+  const handleWriteMetadata = async () => {
+    try {
+      if (!confirm('确定要将当前元数据写入到音频文件吗？这可能需要一些时间。')) {
+        return;
+      }
+      await apiClient.post(`/api/books/${id}/write-metadata`);
+      alert('已开始后台写入元数据，请稍候查看任务进度。');
+    } catch (err) {
+      console.error('写入元数据失败', err);
+      alert('写入失败');
     }
   };
 
@@ -330,24 +352,44 @@ const BookDetailPage: React.FC = () => {
     try {
       const dataToSave = { ...editData };
       // If cover changed, clear theme color so it's recalculated
-      if (editData.coverUrl && editData.coverUrl !== book?.coverUrl) {
-        dataToSave.themeColor = undefined; // Will be handled by COALESCE or we can pass null
+    if (editData.coverUrl && editData.coverUrl !== displayCoverUrl) {
+        dataToSave.themeColor = undefined;
       }
       
+      // The API expects camelCase for updates (client will convert to snake_case)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const payload: Record<string, any> = { ...dataToSave };
-      await apiClient.patch(`/api/books/${id}`, payload);
+      
+      const res = await apiClient.patch(`/api/books/${id}`, payload);
+      const updatedBookData = res.data;
+      
+      // Update local state - merge the changes
+      const updatedBook = { ...book!, ...updatedBookData };
+      // Preserve existing auxiliary fields if not in response
+      if (book!.libraryType) updatedBook.libraryType = book!.libraryType;
+      if (book!.isFavorite !== undefined) updatedBook.isFavorite = book!.isFavorite;
+      
+      setBook(updatedBook);
+      
+      // If the edited book is currently playing, update the player store
+      const currentPlayerState = usePlayerStore.getState();
+      if (currentPlayerState.currentBook?.id === updatedBook.id) {
+        usePlayerStore.setState({
+          currentBook: {
+            ...currentPlayerState.currentBook,
+            ...updatedBook
+          }
+        });
+      }
       
       // If chapterRegex changed, trigger a re-scan of this book
-      if (payload.chapterRegex && book?.libraryId) {
-          apiClient.post(`/api/libraries/${book.libraryId}/scan`);
+      if (payload.chapterRegex) {
+          apiClient.post(`/api/libraries/${book!.libraryId}/scan`);
           alert('规则已保存。正在后台重新扫描该库以应用新规则...');
       }
 
-      setBook({ ...book!, ...dataToSave });
       setIsEditModalOpen(false);
-    } catch (err) {
-      console.error('Failed to save book', err);
+    } catch {
       alert('保存失败');
     }
   };
@@ -358,7 +400,7 @@ const BookDetailPage: React.FC = () => {
       await apiClient.delete(`/api/books/${id}?deleteFiles=${deleteSourceFiles}`);
       navigate('/', { replace: true });
     } catch (err) {
-      console.error('Failed to delete book', err);
+      console.error('删除书籍失败', err);
       alert('删除书籍失败');
     } finally {
       setDeleting(false);
@@ -387,22 +429,24 @@ const BookDetailPage: React.FC = () => {
     return `已播${percent}%`;
   };
 
-  const getTitleFontSize = () => {
-    // Responsive font size: subtle scaling from mobile to desktop
-    return 'text-xl sm:text-2xl md:text-3xl';
-  };
+  const displayThemeColor = book ? (book.themeColor || themeColor) : themeColor;
+  // If the color is too light (close to white), we ignore it and use default to ensure text readability
+  const effectiveThemeColor = displayThemeColor && !isTooLight(displayThemeColor) ? displayThemeColor : undefined;
 
-  const displayThemeColor = themeColor || book?.themeColor;
+  const displayCoverUrl = book ? book.coverUrl : undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const displayLibraryId = book ? (book.libraryId || (book as any).library_id) : undefined;
+  const displayLibraryType = book ? book.libraryType : undefined;
 
   useEffect(() => {
-    if (displayThemeColor) {
-      const bgColor = setAlpha(displayThemeColor, 0.08);
+    if (effectiveThemeColor) {
+      const bgColor = setAlpha(effectiveThemeColor, 0.05);
       document.documentElement.style.setProperty('--page-background', bgColor);
     }
     return () => {
-      document.documentElement.style.setProperty('--page-background', 'transparent');
+      document.documentElement.style.removeProperty('--page-background');
     };
-  }, [displayThemeColor]);
+  }, [effectiveThemeColor]);
 
   if (loading && !book) {
     return (
@@ -415,10 +459,13 @@ const BookDetailPage: React.FC = () => {
   if (!book) return <div className="dark:text-white p-8">未找到书籍</div>;
 
   return (
-    <div className="flex-1 min-h-full flex flex-col p-4 sm:p-6 md:p-8 animate-in slide-in-from-bottom-4 duration-500">
+    <div 
+      className="flex-1 min-h-full flex flex-col p-4 sm:p-6 md:p-8 animate-in slide-in-from-bottom-4 duration-500"
+    >
       <div className="flex-1 max-w-6xl mx-auto space-y-8 w-full">
         {/* Header */}
         <button 
+          type="button"
           onClick={() => navigate(-1)}
           className="flex items-center gap-2 text-slate-500 hover:text-primary-600 transition-colors"
         >
@@ -431,12 +478,14 @@ const BookDetailPage: React.FC = () => {
           <div className="w-48 md:w-72 mx-auto md:mx-0 shrink-0">
             <div className={`${coverShape === 'square' ? 'aspect-square' : 'aspect-[3/4]'} rounded-3xl overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800`}>
               <img 
-                src={getCoverUrl(book.coverUrl, book.libraryId, book.id)} 
+                src={getCoverUrl(displayCoverUrl, displayLibraryId, book.id)} 
                 alt={book.title}
-                crossOrigin="anonymous"
                 className="w-full h-full object-cover rounded-lg shadow-xl"
+                referrerPolicy="no-referrer"
                 onError={(e) => {
-                      (e.target as HTMLImageElement).src = '/logo.png';
+                  const target = e.target as HTMLImageElement;
+                  target.src = 'https://placehold.co/300x400?text=No+Cover';
+                  target.onerror = null;
                 }}
               />
             </div>
@@ -446,7 +495,7 @@ const BookDetailPage: React.FC = () => {
             <div className="space-y-3 min-w-0">
               <ExpandableTitle 
                 title={book.title} 
-                className={`font-bold text-slate-900 dark:text-white leading-tight transition-all duration-300 ${getTitleFontSize()}`}
+                className={`font-bold text-slate-900 dark:text-white leading-tight transition-all duration-300 text-xl sm:text-2xl md:text-3xl`}
                 maxLines={2}
               />
               <div className="flex flex-wrap justify-center md:justify-start gap-x-4 gap-y-2 mt-4 text-sm">
@@ -505,9 +554,10 @@ const BookDetailPage: React.FC = () => {
               <button 
                 onClick={handlePlayClick}
                 className="w-full flex items-center justify-center gap-2 px-5 sm:px-8 py-3.5 sm:py-4 bg-primary-600 hover:bg-primary-700 text-white font-bold rounded-2xl shadow-xl shadow-primary-500/30 transition-all active:scale-95 group"
-                style={themeColor ? { 
-                  backgroundColor: toSolidColor(themeColor),
-                  boxShadow: `0 10px 20px -5px ${setAlpha(themeColor, 0.3)}`
+                style={effectiveThemeColor ? { 
+                  backgroundColor: toSolidColor(effectiveThemeColor),
+                  boxShadow: `0 10px 20px -5px ${setAlpha(effectiveThemeColor, 0.3)}`,
+                  color: isLight(effectiveThemeColor) ? '#475569' : '#ffffff'
                 } : {}}
               >
                 <Play size={18} fill="currentColor" />
@@ -526,6 +576,7 @@ const BookDetailPage: React.FC = () => {
                   <Heart size={20} fill={isFavorite ? "currentColor" : "none"} />
                   收藏
                 </button>
+                
                 {user?.role === 'admin' && (
                   <>
                     <button 
@@ -538,7 +589,14 @@ const BookDetailPage: React.FC = () => {
                     </button>
                     <button 
                       onClick={() => {
-                        setEditData({ ...book });
+                        setEditData({ 
+                          ...book,
+                          coverUrl: displayCoverUrl,
+                          themeColor: displayThemeColor,
+                          libraryType: displayLibraryType,
+                          skipIntro: book.skipIntro,
+                          skipOutro: book.skipOutro
+                        });
                         setIsEditModalOpen(true);
                       }}
                       className="flex-1 min-w-0 px-3 sm:px-4 py-3 rounded-2xl border bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-300 hover:text-primary-600 transition-all active:scale-95 flex items-center justify-center gap-2 font-bold text-sm"
@@ -553,23 +611,25 @@ const BookDetailPage: React.FC = () => {
 
             <div 
               className="mt-auto space-y-3 p-4 rounded-2xl border border-slate-100 dark:border-slate-800/50 relative group/desc"
-              style={themeColor ? { backgroundColor: themeColor } : {}}
-            >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-slate-900 dark:text-white font-bold text-sm uppercase tracking-wider opacity-60">
-                <Info size={16} />
-                简介内容
-              </div>
-            </div>
-            <div className="relative">
-              <p 
-                ref={descriptionRef}
-                className={`text-sm md:text-base text-slate-600 dark:text-slate-400 leading-relaxed transition-all duration-300 ${
-                  !isDescriptionExpanded ? 'line-clamp-2' : ''
-                }`}
+              style={effectiveThemeColor ? { 
+                  backgroundColor: setAlpha(effectiveThemeColor, 0.08)
+                } : {}}
               >
-                {book.description || '暂无简介'}
-              </p>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-slate-900 dark:text-white font-bold text-sm uppercase tracking-wider opacity-60">
+                  <Info size={16} />
+                  简介内容
+                </div>
+              </div>
+              <div className="relative">
+                <p 
+                  ref={descriptionRef}
+                  className={`text-sm md:text-base text-slate-600 dark:text-slate-400 leading-relaxed transition-all duration-300 ${
+                    !isDescriptionExpanded ? 'line-clamp-2' : ''
+                  }`}
+                >
+                  {book.description || '暂无简介'}
+                </p>
               {(isOverflowing || isDescriptionExpanded) && (
                 <button 
                   onClick={() => setIsDescriptionExpanded(!isDescriptionExpanded)}
@@ -604,69 +664,68 @@ const BookDetailPage: React.FC = () => {
             )}
           </h2>
           
-          <div className="flex items-center gap-2 self-start">
-            {extraChapters.length > 0 && (
-              <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
-                <button 
-                  onClick={() => { setActiveTab('main'); setCurrentGroupIndex(0); }}
-                  className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all ${
-                    activeTab === 'main' 
-                      ? 'bg-white dark:bg-slate-700 text-primary-600 shadow-sm' 
-                      : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
-                  }`}
-                >
-                  正文 ({mainChapters.length})
-                </button>
-                <button 
-                  onClick={() => { setActiveTab('extra'); setCurrentGroupIndex(0); }}
-                  className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all ${
-                    activeTab === 'extra' 
-                      ? 'bg-white dark:bg-slate-700 text-primary-600 shadow-sm' 
-                      : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
-                  }`}
-                >
-                  番外 ({extraChapters.length})
-                </button>
-              </div>
-            )}
-          </div>
+          {extraChapters.length > 0 && (
+            <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl self-start">
+              <button 
+                onClick={() => { setActiveTab('main'); setCurrentGroupIndex(0); }}
+                className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all ${
+                  activeTab === 'main' 
+                    ? 'bg-white dark:bg-slate-700 text-primary-600 shadow-sm' 
+                    : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                }`}
+              >
+                正文 ({mainChapters.length})
+              </button>
+              <button 
+                onClick={() => { setActiveTab('extra'); setCurrentGroupIndex(0); }}
+                className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all ${
+                  activeTab === 'extra' 
+                    ? 'bg-white dark:bg-slate-700 text-primary-600 shadow-sm' 
+                    : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                }`}
+              >
+                番外 ({extraChapters.length})
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Chapter Groups Selector */}
         {groups.length > 1 && (
-          <div className="relative group/nav mb-6">
+          <div className="relative group/nav mb-6 flex items-center">
             <button 
               onClick={() => scrollGroups('left')}
-              className="absolute left-0 top-1/2 -translate-y-1/2 z-10 p-1 bg-white/80 dark:bg-slate-800/80 backdrop-blur shadow-md rounded-r-xl opacity-0 group-hover/nav:opacity-100 transition-opacity hidden sm:block"
+              className="absolute -left-4 sm:-left-7 top-1/2 -translate-y-1/2 z-10 p-1 bg-white/90 dark:bg-slate-800/90 backdrop-blur shadow-md rounded-full opacity-0 group-hover/nav:opacity-100 transition-opacity hidden sm:block border border-slate-100 dark:border-slate-700"
             >
               <ChevronLeft size={20} className="text-slate-600 dark:text-slate-400" />
             </button>
             <div 
               ref={scrollRef}
-              className="flex gap-2 overflow-x-auto no-scrollbar scroll-smooth snap-x pb-2"
+              className="flex gap-2 overflow-x-auto no-scrollbar scroll-smooth snap-x pb-2 px-1 mx-1 w-full"
             >
               {groups.map((group, index) => (
                 <button
                   key={index}
                   id={`group-tab-${index}`}
                   onClick={() => setCurrentGroupIndex(index)}
-                  className={`px-4 py-2 rounded-xl text-sm font-bold transition-all border shrink-0 snap-start ${
-                    currentGroupIndex === index
-                      ? 'text-white shadow-lg shadow-black/10'
-                      : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:bg-slate-50'
-                  }`}
-                  style={currentGroupIndex === index && themeColor ? { 
-                    backgroundColor: toSolidColor(themeColor),
-                    borderColor: toSolidColor(themeColor)
-                  } : {}}
-                >
-                  第 {group.start}-{group.end} 章
-                </button>
+                className={`px-4 py-2 rounded-xl text-sm font-bold transition-all border shrink-0 snap-start ${
+                  currentGroupIndex === index
+                    ? `text-white shadow-lg shadow-black/10 ${!effectiveThemeColor ? 'bg-primary-600 border-primary-600' : ''}`
+                    : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:bg-slate-50'
+                }`}
+                style={currentGroupIndex === index && effectiveThemeColor ? { 
+                  backgroundColor: toSolidColor(effectiveThemeColor),
+                  borderColor: toSolidColor(effectiveThemeColor),
+                  color: isLight(effectiveThemeColor) ? '#475569' : '#ffffff'
+                } : {}}
+              >
+                第 {group.start}-{group.end} 章
+              </button>
               ))}
             </div>
             <button 
               onClick={() => scrollGroups('right')}
-              className="absolute right-0 top-1/2 -translate-y-1/2 z-10 p-1 bg-white/80 dark:bg-slate-800/80 backdrop-blur shadow-md rounded-l-xl opacity-0 group-hover/nav:opacity-100 transition-opacity hidden sm:block"
+              className="absolute -right-4 sm:-right-7 top-1/2 -translate-y-1/2 z-10 p-1 bg-white/90 dark:bg-slate-800/90 backdrop-blur shadow-md rounded-full opacity-0 group-hover/nav:opacity-100 transition-opacity hidden sm:block border border-slate-100 dark:border-slate-700"
             >
               <ChevronLeft size={20} className="rotate-180 text-slate-600 dark:text-slate-400" />
             </button>
@@ -677,41 +736,41 @@ const BookDetailPage: React.FC = () => {
           {(groups[currentGroupIndex]?.chapters || currentChapters).map((chapter, index) => {
             const actualIndex = currentGroupIndex * chaptersPerGroup + index;
             const isCurrent = currentChapter?.id === chapter.id;
-            // Active means playing OR highlighted
             const isActive = isCurrent || highlightedChapterId === chapter.id;
-            
+
             return (
               <div 
                 key={chapter.id}
                 id={`chapter-${chapter.id}`}
+                onClick={() => playChapter(book!, currentChapters, chapter)}
                 className={`group flex items-center justify-between p-4 rounded-2xl cursor-pointer transition-all border ${
                   isActive 
                     ? 'bg-opacity-10 border-opacity-20' 
                     : 'bg-white dark:bg-slate-900 border-slate-100 dark:border-slate-800 hover:border-primary-200 dark:hover:border-primary-800'
                 }`}
-                style={isActive && themeColor ? { 
-                  backgroundColor: setAlpha(themeColor, 0.1),
-                  borderColor: setAlpha(themeColor, 0.3),
+                style={isActive && effectiveThemeColor ? { 
+                  backgroundColor: setAlpha(effectiveThemeColor, 0.1),
+                  borderColor: setAlpha(effectiveThemeColor, 0.3),
                 } : {}}
               >
                 <div 
                   className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1 cursor-pointer"
-                  onClick={() => {
-                      playChapter(book!, currentChapters, chapter);
-                  }}
                 >
                   <div 
                     className={`w-10 h-10 sm:w-12 sm:h-12 rounded-xl flex items-center justify-center font-bold text-base sm:text-lg shrink-0 ${
-                      isActive ? 'text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
+                      isActive ? `text-white ${!effectiveThemeColor ? 'bg-primary-600' : ''}` : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
                     }`}
-                    style={isActive && themeColor ? { backgroundColor: toSolidColor(themeColor) } : {}}
+                    style={isActive && effectiveThemeColor ? { 
+                      backgroundColor: toSolidColor(effectiveThemeColor),
+                      color: isLight(effectiveThemeColor) ? '#475569' : '#ffffff'
+                    } : {}}
                   >
-                    {chapter.chapterIndex || (actualIndex + 1)}
+                    {chapter.chapter_index || (actualIndex + 1)}
                   </div>
                   <div className="min-w-0">
                     <p 
                       className={`font-bold truncate ${isActive ? '' : 'text-slate-900 dark:text-white'}`}
-                      style={isActive && themeColor ? { color: toSolidColor(themeColor) } : {}}
+                      style={isActive && effectiveThemeColor ? { color: toSolidColor(effectiveThemeColor) } : {}}
                     >
                       {chapter.title}
                     </p>
@@ -735,31 +794,23 @@ const BookDetailPage: React.FC = () => {
                   </div>
                 </div>
                 
-                <div className={`items-center border-l border-slate-100 dark:border-slate-800 transition-all ${
-                  isCurrent && isPlaying 
-                    ? 'flex gap-2 pl-2 ml-2 sm:gap-4 sm:pl-4 sm:ml-4' 
-                    : 'hidden sm:flex sm:gap-4 sm:pl-4 sm:ml-4'
-                }`}>
+                <div className="flex items-center gap-4">
                   {isCurrent && isPlaying ? (
-                    <div className="flex gap-1 items-end h-5 w-10 justify-center">
-                      <div className="w-1 animate-music-bar-1 rounded-full" style={themeColor ? { backgroundColor: toSolidColor(themeColor) } : {}}></div>
-                      <div className="w-1 animate-music-bar-2 rounded-full" style={themeColor ? { backgroundColor: toSolidColor(themeColor) } : {}}></div>
-                      <div className="w-1 animate-music-bar-3 rounded-full" style={themeColor ? { backgroundColor: toSolidColor(themeColor) } : {}}></div>
+                    <div className="flex gap-1 items-end h-5">
+                      <div className={`w-1 animate-music-bar-1 rounded-full ${!effectiveThemeColor ? 'bg-primary-600' : ''}`} style={effectiveThemeColor ? { backgroundColor: toSolidColor(effectiveThemeColor) } : {}}></div>
+                      <div className={`w-1 animate-music-bar-2 rounded-full ${!effectiveThemeColor ? 'bg-primary-600' : ''}`} style={effectiveThemeColor ? { backgroundColor: toSolidColor(effectiveThemeColor) } : {}}></div>
+                      <div className={`w-1 animate-music-bar-3 rounded-full ${!effectiveThemeColor ? 'bg-primary-600' : ''}`} style={effectiveThemeColor ? { backgroundColor: toSolidColor(effectiveThemeColor) } : {}}></div>
                     </div>
                   ) : (
-                    <button
+                    <div 
+                      className="w-10 h-10 rounded-full bg-slate-50 dark:bg-slate-800 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all cursor-pointer hover:scale-105"
                       onClick={(e) => {
                         e.stopPropagation();
                         playChapter(book!, currentChapters, chapter);
                       }}
-                      className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-slate-50 dark:bg-slate-800 items-center justify-center transition-all hover:scale-105 ${
-                        isActive 
-                          ? 'flex opacity-100' 
-                          : 'hidden sm:flex opacity-0 group-hover:opacity-100'
-                      }`}
                     >
-                      <Play size={16} className="text-primary-600 ml-1" fill="currentColor" style={themeColor ? { color: toSolidColor(themeColor) } : {}} />
-                    </button>
+                      <Play size={16} className="text-primary-600 ml-1" fill="currentColor" style={effectiveThemeColor ? { color: toSolidColor(effectiveThemeColor) } : {}} />
+                    </div>
                   )}
                 </div>
               </div>

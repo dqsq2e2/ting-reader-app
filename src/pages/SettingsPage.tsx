@@ -445,6 +445,38 @@ const SettingsPage: React.FC = () => {
                 }`} />
               </button>
             </div>
+
+            <div className="flex items-center justify-between gap-4 pt-4 border-t border-slate-100 dark:border-slate-800">
+              <div className="flex-1 min-w-0">
+                <p className="font-bold dark:text-white truncate">忽略音频焦点 (同时播放)</p>
+                <p className="text-xs md:text-sm text-slate-500 line-clamp-2">允许与其他应用同时播放音频，开启后可能需要重启应用生效 (仅移动端)</p>
+              </div>
+              <button
+                onClick={() => {
+                  const newState = !usePlayerStore.getState().ignoreAudioFocus;
+                  usePlayerStore.getState().setIgnoreAudioFocus(newState);
+                  // Call plugin directly if available
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  if (typeof window !== 'undefined' && (window as any).Capacitor) {
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    const { Capacitor } = window as any;
+                    if (Capacitor.isPluginAvailable('AudioConfig')) {
+                      Capacitor.Plugins.AudioConfig.setIgnoreAudioFocus({ ignore: newState });
+                    }
+                  }
+                  // Force a re-render
+                  setAccountSaved(true);
+                  setTimeout(() => setAccountSaved(false), 500);
+                }}
+                className={`flex-shrink-0 w-12 md:w-14 h-7 md:h-8 rounded-full transition-all relative ${
+                  usePlayerStore.getState().ignoreAudioFocus ? 'bg-primary-600' : 'bg-slate-200 dark:bg-slate-700'
+                }`}
+              >
+                <div className={`absolute top-1 w-5 md:w-6 h-5 md:h-6 bg-white rounded-full transition-all ${
+                  usePlayerStore.getState().ignoreAudioFocus ? 'left-6 md:left-7' : 'left-1'
+                }`} />
+              </button>
+            </div>
           </div>
         </section>
 

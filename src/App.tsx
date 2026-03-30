@@ -12,7 +12,7 @@ import FavoritesPage from './pages/FavoritesPage';
 import SettingsPage from './pages/SettingsPage';
 import AdminLibraries from './pages/AdminLibraries';
 import AdminUsers from './pages/AdminUsers';
-import TaskLogsPage from './pages/TaskLogsPage';
+import LogsPage from './pages/LogsPage';
 import PluginsPage from './pages/PluginsPage';
 import { useAuthStore } from './store/authStore';
 import { usePlayerStore } from './store/playerStore';
@@ -108,12 +108,12 @@ function App() {
                     <AdminUsers />
                   </AdminRoute>
                 } />
-                <Route path="admin/tasks" element={
-                  <AdminRoute>
-                    <TaskLogsPage />
-                  </AdminRoute>
-                } />
-                <Route path="admin/plugins" element={
+                <Route path="admin/logs" element={
+            <AdminRoute>
+              <LogsPage />
+            </AdminRoute>
+          } />
+          <Route path="admin/plugins" element={
                   <AdminRoute>
                     <PluginsPage />
                   </AdminRoute>
