@@ -34,6 +34,9 @@ import android.os.Build;
 import android.R;
 import android.content.BroadcastReceiver;
 import android.media.AudioManager;
+import android.os.Handler;
+import android.os.Looper;
+import android.webkit.WebView;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -116,8 +119,17 @@ public class CapacitorMusicControls extends Plugin {
 					}
 				}
 
+				float playbackRate = 1.0f;
+				if (options.has("playbackRate")) {
+					try {
+						playbackRate = (float) options.getDouble("playbackRate");
+					} catch (Exception e) {
+						playbackRate = 1.0f;
+					}
+				}
+
 				if(infos.isPlaying)
-					setMediaPlaybackState(PlaybackStateCompat.STATE_PLAYING, elapsed, 1.0f);
+					setMediaPlaybackState(PlaybackStateCompat.STATE_PLAYING, elapsed, playbackRate);
 				else
 					setMediaPlaybackState(PlaybackStateCompat.STATE_PAUSED, elapsed, 0f);
 
@@ -333,8 +345,17 @@ public class CapacitorMusicControls extends Plugin {
 				}
 			}
 
+			float playbackRate = 1.0f;
+			if (params.has("playbackRate")) {
+				try {
+					playbackRate = (float) params.getDouble("playbackRate");
+				} catch (Exception e) {
+					playbackRate = 1.0f;
+				}
+			}
+
 			if(isPlaying)
-				setMediaPlaybackState(PlaybackStateCompat.STATE_PLAYING, elapsed, 1.0f);
+				setMediaPlaybackState(PlaybackStateCompat.STATE_PLAYING, elapsed, playbackRate);
 			else
 				setMediaPlaybackState(PlaybackStateCompat.STATE_PAUSED, elapsed, 0f);
 
@@ -368,8 +389,17 @@ public class CapacitorMusicControls extends Plugin {
 				}
 			}
 
+			float playbackRate = 1.0f;
+			if (params.has("playbackRate")) {
+				try {
+					playbackRate = (float) params.getDouble("playbackRate");
+				} catch (Exception e) {
+					playbackRate = 1.0f;
+				}
+			}
+
 			if(isPlaying)
-				setMediaPlaybackState(PlaybackStateCompat.STATE_PLAYING, elapsed, 1.0f);
+				setMediaPlaybackState(PlaybackStateCompat.STATE_PLAYING, elapsed, playbackRate);
 			else
 				setMediaPlaybackState(PlaybackStateCompat.STATE_PAUSED, elapsed, 0f);
 
@@ -405,14 +435,38 @@ public class CapacitorMusicControls extends Plugin {
 	public void controlsNotification(JSObject ret){
 		String eventName = ret.getString("message");
 		Log.i(TAG, "controlsNotification fired "  + eventName);
-		
-		// Fire Capacitor Plugin Event (what addListener listens for)
-		notifyListeners(eventName, ret);
-		
-		// Keep legacy support just in case
-		this.bridge.triggerJSEvent("controlsNotification", "document", ret.toString());
 
+		deliverControlsEvent(eventName, ret);
   }
+
+	private void deliverControlsEvent(String eventName, JSObject ret) {
+		final Activity activity = getActivity();
+		final Handler handler = new Handler(Looper.getMainLooper());
+
+		Runnable notifyTask = () -> {
+			notifyListeners(eventName, ret);
+			if (this.bridge != null) {
+				this.bridge.triggerJSEvent("controlsNotification", "document", ret.toString());
+			}
+		};
+
+		if (activity == null || this.bridge == null || this.bridge.getWebView() == null) {
+			handler.post(notifyTask);
+			return;
+		}
+
+		activity.runOnUiThread(() -> {
+			try {
+				WebView webView = this.bridge.getWebView();
+				webView.onResume();
+				webView.resumeTimers();
+			} catch (Exception e) {
+				Log.w(TAG, "Failed to resume WebView before media action", e);
+			}
+
+			handler.postDelayed(notifyTask, 75);
+		});
+	}
 
 	private void setMediaPlaybackState(int state, long position, float speed) {
 		PlaybackStateCompat.Builder playbackstateBuilder = new PlaybackStateCompat.Builder();

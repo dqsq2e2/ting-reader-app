@@ -26,6 +26,13 @@ import android.app.NotificationChannel;
 
 public class MusicControlsNotification {
 	private static final String TAG = "CMCNotification";
+	private static final int REQUEST_CONTENT = 100;
+	private static final int REQUEST_DISMISS = 101;
+	private static final int REQUEST_PREVIOUS = 102;
+	private static final int REQUEST_PLAY = 103;
+	private static final int REQUEST_PAUSE = 104;
+	private static final int REQUEST_NEXT = 105;
+	private static final int REQUEST_DESTROY = 106;
 
 	private Activity cordovaActivity;
 	private NotificationManager notificationManager;
@@ -65,6 +72,16 @@ public class MusicControlsNotification {
 			this.notificationManager.createNotificationChannel(mChannel);
     }
 
+	}
+
+	private PendingIntent buildBroadcastPendingIntent(Context context, String action, int requestCode) {
+		Intent intent = new Intent(action);
+		intent.setPackage(context.getPackageName());
+		int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+			flags |= PendingIntent.FLAG_IMMUTABLE;
+		}
+		return PendingIntent.getBroadcast(context, requestCode, intent, flags);
 	}
 
 	// Show or update notification
@@ -191,8 +208,7 @@ public class MusicControlsNotification {
 		// set if the notification can be destroyed by swiping
 		if (this.infos.dismissable){
 			builder.setOngoing(false);
-			Intent dismissIntent = new Intent("music-controls-destroy");
-			PendingIntent dismissPendingIntent = PendingIntent.getBroadcast(context, 1, dismissIntent, Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ? PendingIntent.FLAG_IMMUTABLE : 0);
+			PendingIntent dismissPendingIntent = buildBroadcastPendingIntent(context, "music-controls-destroy", REQUEST_DISMISS);
 			builder.setDeleteIntent(dismissPendingIntent);
 		} else {
 			builder.setOngoing(true);
@@ -233,7 +249,11 @@ public class MusicControlsNotification {
 		Intent resultIntent = new Intent(context, cordovaActivity.getClass());
 		resultIntent.setAction(Intent.ACTION_MAIN);
 		resultIntent.addCategory(Intent.CATEGORY_LAUNCHER);
-		PendingIntent resultPendingIntent = PendingIntent.getActivity(context, 0, resultIntent, Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ? PendingIntent.FLAG_IMMUTABLE : 0);
+		int contentFlags = PendingIntent.FLAG_UPDATE_CURRENT;
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+			contentFlags |= PendingIntent.FLAG_IMMUTABLE;
+		}
+		PendingIntent resultPendingIntent = PendingIntent.getActivity(context, REQUEST_CONTENT, resultIntent, contentFlags);
 		builder.setContentIntent(resultPendingIntent);
 
 		// Controls
@@ -242,37 +262,32 @@ public class MusicControlsNotification {
 		if (this.infos.hasPrev){
 			Log.i(TAG, "controls hasPrev");
 			nbControls++;
-			Intent previousIntent = new Intent("music-controls-previous");
-			PendingIntent previousPendingIntent = PendingIntent.getBroadcast(context, 1, previousIntent, Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ? PendingIntent.FLAG_IMMUTABLE : 0);
+			PendingIntent previousPendingIntent = buildBroadcastPendingIntent(context, "music-controls-previous", REQUEST_PREVIOUS);
 			builder.addAction(this.getResourceId(this.infos.prevIcon, android.R.drawable.ic_media_previous), "", previousPendingIntent);
 		}
 		if (this.infos.isPlaying){
 			/* Pause  */
 			nbControls++;
-			Intent pauseIntent = new Intent("music-controls-pause");
-			PendingIntent pausePendingIntent = PendingIntent.getBroadcast(context, 1, pauseIntent, Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ? PendingIntent.FLAG_IMMUTABLE : 0);
+			PendingIntent pausePendingIntent = buildBroadcastPendingIntent(context, "music-controls-pause", REQUEST_PAUSE);
 			builder.addAction(this.getResourceId(this.infos.pauseIcon, android.R.drawable.ic_media_pause), "", pausePendingIntent);
 		} else {
 			/* Play  */
 			nbControls++;
-			Intent playIntent = new Intent("music-controls-play");
-			PendingIntent playPendingIntent = PendingIntent.getBroadcast(context, 1, playIntent, Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ? PendingIntent.FLAG_IMMUTABLE : 0);
+			PendingIntent playPendingIntent = buildBroadcastPendingIntent(context, "music-controls-play", REQUEST_PLAY);
 			builder.addAction(this.getResourceId(this.infos.playIcon, android.R.drawable.ic_media_play), "", playPendingIntent);
 		}
 		/* Next */
 		if (this.infos.hasNext){
 			Log.i(TAG, "controls hasNext");
 			nbControls++;
-			Intent nextIntent = new Intent("music-controls-next");
-			PendingIntent nextPendingIntent = PendingIntent.getBroadcast(context, 1, nextIntent, Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ? PendingIntent.FLAG_IMMUTABLE : 0);
+			PendingIntent nextPendingIntent = buildBroadcastPendingIntent(context, "music-controls-next", REQUEST_NEXT);
 			builder.addAction(this.getResourceId(this.infos.nextIcon, android.R.drawable.ic_media_next), "", nextPendingIntent);
 		}
 		/* Close */
 		if (this.infos.hasClose){
 			Log.i(TAG, "controls hasClose");
 			nbControls++;
-			Intent destroyIntent = new Intent("music-controls-destroy");
-			PendingIntent destroyPendingIntent = PendingIntent.getBroadcast(context, 1, destroyIntent, Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ? PendingIntent.FLAG_IMMUTABLE : 0);
+			PendingIntent destroyPendingIntent = buildBroadcastPendingIntent(context, "music-controls-destroy", REQUEST_DESTROY);
 			builder.addAction(this.getResourceId(this.infos.closeIcon, android.R.drawable.ic_menu_close_clear_cancel), "", destroyPendingIntent);
 		}
 
