@@ -2,6 +2,7 @@ import axios from 'axios';
 import camelcaseKeys from 'camelcase-keys';
 import snakecaseKeys from 'snakecase-keys';
 import { useAuthStore } from '../store/authStore';
+import { safeStorage } from '../utils/storage';
 
 type WindowWithElectron = {
   electronAPI?: {
@@ -12,7 +13,7 @@ type WindowWithElectron = {
 // Initial base URL
 // For Capacitor App, we must ensure we don't default to relative URL if no server_url is set
 const isApp = true; // This codebase is for the App
-const API_BASE_URL = localStorage.getItem('active_url') || localStorage.getItem('server_url') || (import.meta.env.PROD ? (isApp ? '' : '') : 'http://localhost:3000');
+const API_BASE_URL = safeStorage.getItem('active_url') || safeStorage.getItem('server_url') || (import.meta.env.PROD ? (isApp ? '' : '') : 'http://localhost:3000');
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,

@@ -8,6 +8,7 @@ import { CapacitorHttp } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import logoImg from '../assets/logo.png';
 import { Loader2 } from 'lucide-react';
+import { safeStorage } from '../utils/storage';
 
 type WindowWithElectron = {
   electronAPI?: unknown;
@@ -194,10 +195,10 @@ const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
       }
 
       // Check if we have saved credentials
-      const savedUsername = localStorage.getItem('saved_username');
-      const savedPassword = localStorage.getItem('saved_password');
-      const serverUrl = localStorage.getItem('server_url');
-      const activeUrl = localStorage.getItem('active_url'); // Try to use resolved URL first
+      const savedUsername = safeStorage.getItem('saved_username');
+      const savedPassword = safeStorage.getItem('saved_password');
+      const serverUrl = safeStorage.getItem('server_url');
+      const activeUrl = safeStorage.getItem('active_url'); // Try to use resolved URL first
 
       // If we are already on the login or offline page, skip auto-login
       if (location.pathname === '/login') {

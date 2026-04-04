@@ -4,6 +4,7 @@ import { useAuthStore } from '../store/authStore';
 import { Lock, User, Server } from 'lucide-react';
 import { CapacitorHttp } from '@capacitor/core';
 import logoImg from '../assets/logo.png';
+import { safeStorage } from '../utils/storage';
 
 const LoginPage: React.FC = () => {
   const [serverAddress, setServerAddress] = useState('');
@@ -35,8 +36,8 @@ const LoginPage: React.FC = () => {
 
   useEffect(() => {
     // Restore saved credentials if available
-    const savedUsername = localStorage.getItem('saved_username');
-    const savedPassword = localStorage.getItem('saved_password');
+    const savedUsername = safeStorage.getItem('saved_username');
+    const savedPassword = safeStorage.getItem('saved_password');
     if (savedUsername) setUsername(savedUsername);
     if (savedPassword) setPassword(savedPassword);
     
@@ -209,13 +210,13 @@ const LoginPage: React.FC = () => {
                        setActiveUrl(baseUrl);
                        
                        // Save credentials if "Remember Password" is checked (MUST be done before navigate)
-                       if (rememberPassword) {
-                         localStorage.setItem('saved_username', username);
-                         localStorage.setItem('saved_password', password);
-                       } else {
-                         localStorage.removeItem('saved_username');
-                         localStorage.removeItem('saved_password');
-                       }
+                      if (rememberPassword) {
+                        safeStorage.setItem('saved_username', username);
+                        safeStorage.setItem('saved_password', password);
+                      } else {
+                        safeStorage.removeItem('saved_username');
+                        safeStorage.removeItem('saved_password');
+                      }
 
                        setAuth(responseData.user, responseData.token);
                        navigate('/');
@@ -238,11 +239,11 @@ const LoginPage: React.FC = () => {
 
                        // Save credentials if "Remember Password" is checked (MUST be done before navigate)
                        if (rememberPassword) {
-                         localStorage.setItem('saved_username', username);
-                         localStorage.setItem('saved_password', password);
+                         safeStorage.setItem('saved_username', username);
+                         safeStorage.setItem('saved_password', password);
                        } else {
-                         localStorage.removeItem('saved_username');
-                         localStorage.removeItem('saved_password');
+                         safeStorage.removeItem('saved_username');
+                         safeStorage.removeItem('saved_password');
                        }
 
                        setAuth(data.user, data.token);
@@ -262,11 +263,11 @@ const LoginPage: React.FC = () => {
       
       // Save credentials if "Remember Password" is checked
       if (rememberPassword) {
-        localStorage.setItem('saved_username', username);
-        localStorage.setItem('saved_password', password);
+        safeStorage.setItem('saved_username', username);
+        safeStorage.setItem('saved_password', password);
       } else {
-        localStorage.removeItem('saved_username');
-        localStorage.removeItem('saved_password');
+        safeStorage.removeItem('saved_username');
+        safeStorage.removeItem('saved_password');
       }
 
       setAuth(user, token);

@@ -1,3 +1,4 @@
+import { Capacitor } from '@capacitor/core';
 import React, { useRef, useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { usePlayerStore } from '../store/playerStore';
@@ -28,6 +29,38 @@ import {
 import { getCoverUrl } from '../utils/image';
 import { setAlpha, toSolidColor, isLight, isTooLight } from '../utils/color';
 import { CapacitorMusicControls as MusicControls } from 'capacitor-music-controls-plugin';
+
+type MediaError = {
+  code?: number;
+  message?: string;
+};
+
+type MediaInstance = {
+  play: () => void;
+  pause: () => void;
+  stop: () => void;
+  release: () => void;
+  getDuration: () => number;
+  getCurrentPosition: (success: (position: number) => void, error?: (err: MediaError) => void) => void;
+  seekTo: (positionMs: number) => void;
+  setVolume?: (volume: number) => void;
+  setRate?: (rate: number) => void;
+  _status?: number;
+  _resumeTime?: number;
+  _initialSeekDone?: boolean;
+};
+
+type MediaConstructor = new (
+  src: string,
+  success: () => void,
+  error: (err: MediaError) => void,
+  status: (status: number) => void
+) => MediaInstance;
+
+type WindowWithMedia = Window & {
+  Media?: MediaConstructor;
+  electronAPI?: unknown;
+};
 
 interface ProgressBarProps {
   isMini?: boolean;
@@ -124,7 +157,10 @@ const Player: React.FC = () => {
   const { token, activeUrl } = useAuthStore();
   const API_BASE_URL = activeUrl || import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? '' : 'http://localhost:3000');
   
-  const getStreamUrl = (chapterId: string) => {
+  const [retryCount, setRetryCount] = useState(0);
+  const [shouldTranscode, setShouldTranscode] = useState(false);
+
+  const getStreamUrl = React.useCallback((chapterId: string, seekTime?: number) => {
     let url = '';
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if ((window as any).electronAPI) {
@@ -137,6 +173,9 @@ const Player: React.FC = () => {
     
     if (shouldTranscode) {
       url += '&transcode=mp3';
+      if (seekTime && seekTime > 0) {
+        url += `&seek=${seekTime}`;
+      }
     }
     
     // Add retry count to force URL refresh even if shouldTranscode didn't change (e.g. network retry)
@@ -145,13 +184,12 @@ const Player: React.FC = () => {
     }
     
     return url;
-  };
+  }, [API_BASE_URL, token, shouldTranscode, retryCount]);
 
   const { 
     currentBook, 
     currentChapter, 
     isPlaying, 
-    togglePlay, 
     currentTime, 
     duration, 
     setCurrentTime, 
@@ -173,7 +211,13 @@ const Player: React.FC = () => {
     isSeriesEditing
   } = usePlayerStore();
 
+  const isNative = Capacitor.isNativePlatform();
   const audioRef = useRef<HTMLAudioElement>(null);
+  const mediaRef = useRef<MediaInstance | null>(null);
+  const mediaTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isSeekingRef = useRef(false);
+  const seekTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const streamOffsetRef = useRef(0);
   const location = useLocation();
   const [isMuted, setIsMuted] = useState(false);
   const [showChapters, setShowChapters] = useState(false);
@@ -307,10 +351,14 @@ const Player: React.FC = () => {
   const [bufferedTime, setBufferedTime] = useState(0);
   const [autoPreload, setAutoPreload] = useState(false);
   const [autoCache, setAutoCache] = useState(false);
-  const [retryCount, setRetryCount] = useState(0);
-  const [shouldTranscode, setShouldTranscode] = useState(false);
   const isInitialLoadRef = useRef(true);
   const preloadAudioRef = useRef<HTMLAudioElement | null>(null);
+  const chapterEndHandledRef = useRef<string | null>(null);
+  const playbackWatchdogRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const resumeRecoveryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastKnownAudioTimeRef = useRef(0);
+  const [isSeeking, setIsSeeking] = useState(false);
+  const [seekTime, setSeekTime] = useState(0);
 
   // Fetch settings for auto_preload and user preferences
   useEffect(() => {
@@ -360,6 +408,7 @@ const Player: React.FC = () => {
   // Reset initial load ref when chapter changes
   useEffect(() => {
     isInitialLoadRef.current = true;
+    chapterEndHandledRef.current = null;
     setShouldTranscode(false);
     setTimeout(() => {
       setBufferedTime(0);
@@ -373,6 +422,353 @@ const Player: React.FC = () => {
       isInitialLoadRef.current = true;
     }
   }, [retryCount]);
+
+  const syncMusicControlsElapsed = React.useCallback((elapsed: number, playing = usePlayerStore.getState().isPlaying) => {
+    const safeElapsed = Number.isFinite(elapsed) && elapsed >= 0 ? elapsed : 0;
+    try {
+      MusicControls.updateElapsed({
+        elapsed: safeElapsed,
+        isPlaying: playing,
+        playbackRate: usePlayerStore.getState().playbackSpeed
+      });
+    } catch (err) {
+      console.warn('更新锁屏进度失败', err);
+    }
+  }, []);
+
+  const clearResumeRecoveryTimer = React.useCallback(() => {
+    if (resumeRecoveryTimeoutRef.current) {
+      clearTimeout(resumeRecoveryTimeoutRef.current);
+      resumeRecoveryTimeoutRef.current = null;
+    }
+  }, []);
+
+  const markPlaybackPaused = React.useCallback((elapsed?: number) => {
+    const fallbackElapsed = elapsed ?? audioRef.current?.currentTime ?? usePlayerStore.getState().currentTime;
+    setIsPlaying(false);
+    syncMusicControlsElapsed(fallbackElapsed, false);
+  }, [setIsPlaying, syncMusicControlsElapsed]);
+
+  const attemptPlaybackRecovery = React.useCallback(async (resumeAt: number) => {
+    const audio = audioRef.current;
+    if (!audio || !currentChapter) return false;
+
+    try {
+      const nextSrc = getStreamUrl(currentChapter.id);
+      if (audio.src !== nextSrc) {
+        audio.src = nextSrc;
+      }
+
+      audio.load();
+
+      await new Promise<void>((resolve) => {
+        const onReady = () => {
+          audio.removeEventListener('loadedmetadata', onReady);
+          audio.removeEventListener('canplay', onReady);
+          resolve();
+        };
+
+        audio.addEventListener('loadedmetadata', onReady, { once: true });
+        audio.addEventListener('canplay', onReady, { once: true });
+
+        setTimeout(() => {
+          audio.removeEventListener('loadedmetadata', onReady);
+          audio.removeEventListener('canplay', onReady);
+          resolve();
+        }, 1500);
+      });
+
+      if (resumeAt > 0 && Number.isFinite(audio.duration) && audio.duration > 0) {
+        audio.currentTime = Math.min(resumeAt, Math.max(audio.duration - 0.5, 0));
+      } else if (resumeAt > 0) {
+        audio.currentTime = resumeAt;
+      }
+
+      await audio.play();
+      return true;
+    } catch (err) {
+      console.error('后台恢复播放失败', err);
+      return false;
+    }
+  }, [currentChapter, getStreamUrl]);
+
+  const finalizeChapterPlayback = React.useCallback((chapterId: string, finalPosition?: number) => {
+    if (chapterEndHandledRef.current === chapterId) return;
+
+    const state = usePlayerStore.getState();
+    if (state.currentChapter?.id !== chapterId || !state.currentBook) return;
+
+    chapterEndHandledRef.current = chapterId;
+
+    const audioDuration = audioRef.current?.duration;
+    const safeFinalPosition = Number.isFinite(finalPosition) && (finalPosition ?? 0) > 0
+      ? finalPosition!
+      : Math.max(
+          state.currentTime,
+          state.duration,
+          Number.isFinite(audioDuration) ? audioDuration : 0
+        );
+
+    apiClient.post('/api/progress', {
+      bookId: state.currentBook.id,
+      chapterId,
+      position: Math.floor(safeFinalPosition)
+    }).catch(err => console.error('同步最终进度失败', err));
+
+    const currentIndex = state.chapters.findIndex(chapter => chapter.id === chapterId);
+    const hasNextChapter = currentIndex !== -1 && currentIndex < state.chapters.length - 1;
+
+    if (hasNextChapter) {
+      state.nextChapter();
+      return;
+    }
+
+    state.setIsPlaying(false);
+  }, []);
+
+  const initNativeMedia = React.useCallback((url: string) => {
+    const oldMedia = mediaRef.current;
+    if (mediaRef.current) mediaRef.current = null;
+    if (mediaTimerRef.current) { clearInterval(mediaTimerRef.current); mediaTimerRef.current = null; }
+
+    const mediaCtor = (window as WindowWithMedia).Media;
+    if (!mediaCtor) {
+      console.error('Cordova Media plugin not found!');
+      if (oldMedia) oldMedia.release();
+      return;
+    }
+
+    const media = new mediaCtor(
+      url,
+      () => {
+        if (mediaRef.current !== media) return;
+        if (currentChapter?.id) {
+          // Trigger the centralized end playback handler
+          setTimeout(() => finalizeChapterPlayback(currentChapter.id, usePlayerStore.getState().duration), 0);
+        }
+      },
+      (err: MediaError) => {
+        if (mediaRef.current !== media) return;
+        const errorCode = err?.code;
+        const shouldRetry = errorCode === 1 || errorCode === 3 || errorCode === 4 || (typeof errorCode === 'number' && errorCode < 0);
+
+        if (errorCode === -2147483648) {
+          console.warn('Caught generic media error, recovering...');
+          const currentPos = usePlayerStore.getState().currentTime;
+          const currentId = usePlayerStore.getState().currentChapter?.id;
+          if (currentId) {
+            setTimeout(() => initNativeMedia(getStreamUrl(currentId, currentPos)), 500);
+          }
+          return;
+        }
+
+        if (shouldRetry && retryCount < 3) {
+          console.log(`Playback error ${errorCode}, retrying with transcode (${retryCount + 1}/3)...`);
+          setShouldTranscode(true);
+          isInitialLoadRef.current = true;
+          setRetryCount(prev => prev + 1);
+          return;
+        }
+        if (errorCode !== 0) setError(`播放出错: ${err?.message || err?.code || JSON.stringify(err)}`);
+      },
+      (status: number) => {
+        if (mediaRef.current !== media) return;
+        if (mediaRef.current) mediaRef.current._status = status;
+        
+        if (status === 2) {
+          setIsPlaying(true);
+          const state = usePlayerStore.getState();
+          if (media.setRate) media.setRate(state.playbackSpeed);
+          if (media.setVolume) media.setVolume(isMuted ? 0 : state.volume);
+          if (media._resumeTime && media._resumeTime > 0 && !media._initialSeekDone) {
+            media.seekTo(media._resumeTime * 1000);
+            // Assume seek completes after a short delay to avoid progress bar freeze
+            setTimeout(() => {
+                if (mediaRef.current === media) {
+                    media._initialSeekDone = true;
+                }
+            }, 1000);
+          }
+        } else if (status === 3) {
+          markPlaybackPaused(usePlayerStore.getState().currentTime);
+        } else if (status === 4) {
+          console.log('Status stopped (4), ignoring to prevent background freeze before next chapter');
+        }
+      }
+    );
+
+    media._status = 0;
+    let resumeTime = usePlayerStore.getState().currentTime;
+    if (url.includes('seek=')) resumeTime = 0;
+    media._resumeTime = resumeTime;
+    media._initialSeekDone = resumeTime <= 0;
+
+    mediaRef.current = media;
+    if (usePlayerStore.getState().isPlaying) media.play();
+    if (oldMedia) oldMedia.release();
+
+    mediaTimerRef.current = setInterval(() => {
+      if (mediaRef.current) {
+        mediaRef.current.getCurrentPosition((position: number) => {
+          if (position > -1) {
+            if (mediaRef.current?._resumeTime && mediaRef.current._resumeTime > 0 && !mediaRef.current._initialSeekDone) {
+              if (Math.abs(position - mediaRef.current._resumeTime) < 2) {
+                mediaRef.current._initialSeekDone = true;
+              } else return;
+            }
+            if (isSeekingRef.current) return;
+            
+            const state = usePlayerStore.getState();
+            const realPosition = position + streamOffsetRef.current;
+            if (Math.abs(realPosition - state.currentTime) > 0.5) {
+              setCurrentTime(realPosition);
+            }
+            
+            const d = mediaRef.current?.getDuration() || 0;
+            if (d > 0 && d !== state.duration && !shouldTranscode) {
+              setDuration(d);
+            }
+            
+            syncMusicControlsElapsed(realPosition, state.isPlaying);
+            
+            const book = state.currentBook;
+            if (book) {
+              if (isInitialLoadRef.current && book.skipIntro && realPosition < book.skipIntro) {
+                if (shouldTranscode) {
+                  streamOffsetRef.current = book.skipIntro;
+                  initNativeMedia(getStreamUrl(state.currentChapter!.id, book.skipIntro));
+                } else {
+                  mediaRef.current!.seekTo(book.skipIntro * 1000);
+                }
+                setCurrentTime(book.skipIntro);
+                isInitialLoadRef.current = false;
+              }
+              if (book.skipOutro && d > 0) {
+                const minDuration = (book.skipIntro || 0) + book.skipOutro + 10;
+                if (d > minDuration && (d - realPosition) <= book.skipOutro) {
+                  state.nextChapter();
+                }
+              }
+            }
+          }
+        }, () => {});
+      }
+    }, 1000);
+  }, [currentChapter, isMuted, retryCount, shouldTranscode, finalizeChapterPlayback, getStreamUrl, markPlaybackPaused, setCurrentTime, setDuration, setIsPlaying, syncMusicControlsElapsed]);
+
+  const performSeek = React.useCallback((time: number) => {
+    if (seekTimeoutRef.current) clearTimeout(seekTimeoutRef.current);
+    isSeekingRef.current = true;
+    setCurrentTime(time);
+
+    if (shouldTranscode) {
+      seekTimeoutRef.current = setTimeout(() => {
+        streamOffsetRef.current = time;
+        const currentId = usePlayerStore.getState().currentChapter?.id;
+        if (currentId) {
+          const url = getStreamUrl(currentId, time) + (retryCount > 0 ? `&retry=${retryCount}` : '');
+          if (isNative) initNativeMedia(url);
+          else if (audioRef.current) {
+            audioRef.current.src = url;
+            audioRef.current.load();
+            audioRef.current.play().catch(() => {});
+          }
+        }
+        setTimeout(() => { isSeekingRef.current = false; }, 1000);
+      }, 500);
+      return;
+    }
+
+    seekTimeoutRef.current = setTimeout(() => {
+      if (isNative && mediaRef.current) {
+        mediaRef.current.seekTo(time * 1000);
+      }
+      setTimeout(() => { isSeekingRef.current = false; }, 1000);
+    }, 300);
+  }, [setCurrentTime, shouldTranscode, retryCount, getStreamUrl, isNative, initNativeMedia]);
+
+  const requestPlay = React.useCallback(async (reason: 'ui' | 'remote' | 'resume-check' = 'ui') => {
+    if (isNative) {
+      if (mediaRef.current) mediaRef.current.play();
+      else if (currentChapter) initNativeMedia(getStreamUrl(currentChapter.id));
+      return true;
+    }
+
+    const audio = audioRef.current;
+    if (!audio || !currentChapter) return false;
+
+    clearResumeRecoveryTimer();
+
+    const resumeAt = Number.isFinite(audio.currentTime) && audio.currentTime > 0
+      ? audio.currentTime
+      : usePlayerStore.getState().currentTime;
+
+    audio.playbackRate = playbackSpeed;
+    audio.volume = isMuted ? 0 : volume;
+    lastKnownAudioTimeRef.current = resumeAt;
+
+    try {
+      await audio.play();
+    } catch (err) {
+      console.warn(`播放请求失败(${reason})，尝试重新恢复流`, err);
+      const recovered = await attemptPlaybackRecovery(resumeAt);
+      if (!recovered) {
+        markPlaybackPaused(resumeAt);
+        return false;
+      }
+    }
+
+    resumeRecoveryTimeoutRef.current = setTimeout(async () => {
+      const liveAudio = audioRef.current;
+      if (!liveAudio || liveAudio.paused || usePlayerStore.getState().currentChapter?.id !== currentChapter.id) return;
+
+      const actualTime = liveAudio.currentTime;
+      const advanced = actualTime > lastKnownAudioTimeRef.current + 0.2;
+      const hasAudibleOutput = !liveAudio.muted && liveAudio.volume > 0;
+
+      if (!advanced && !hasAudibleOutput) {
+        const recovered = await attemptPlaybackRecovery(actualTime || resumeAt);
+        if (!recovered) {
+          markPlaybackPaused(actualTime || resumeAt);
+        }
+      }
+    }, reason === 'remote' ? 1800 : 1200);
+
+    return true;
+  }, [attemptPlaybackRecovery, clearResumeRecoveryTimer, currentChapter, isMuted, markPlaybackPaused, playbackSpeed, volume, getStreamUrl, initNativeMedia, isNative]);
+
+  const requestPause = React.useCallback(() => {
+    clearResumeRecoveryTimer();
+    if (isNative) {
+      if (mediaRef.current) {
+        const status = mediaRef.current._status;
+        if (status === 1 || status === 2 || status === 3) mediaRef.current.pause();
+      }
+      markPlaybackPaused();
+      return;
+    }
+    if (audioRef.current && !audioRef.current.paused) {
+      audioRef.current.pause();
+      return;
+    }
+
+    markPlaybackPaused();
+  }, [clearResumeRecoveryTimer, markPlaybackPaused, isNative]);
+
+  const togglePlayback = React.useCallback(() => {
+    if (isNative) {
+      if (usePlayerStore.getState().isPlaying) requestPause();
+      else void requestPlay('ui');
+      return;
+    }
+    const audio = audioRef.current;
+    if (audio && !audio.paused && !audio.ended && usePlayerStore.getState().isPlaying) {
+      requestPause();
+      return;
+    }
+
+    void requestPlay('ui');
+  }, [requestPause, requestPlay, isNative]);
 
   // Update Controls: Create/Update Metadata when Chapter Changes
   useEffect(() => {
@@ -390,6 +786,7 @@ const Player: React.FC = () => {
         hasScrubbing: true,
         duration: usePlayerStore.getState().duration,
         elapsed: usePlayerStore.getState().currentTime,
+        playbackRate: usePlayerStore.getState().playbackSpeed,
         ticker: `正在播放: ${currentChapter.title}`,
         playIcon: '',
         pauseIcon: '',
@@ -415,6 +812,7 @@ const Player: React.FC = () => {
             hasScrubbing: true,
             duration: duration,
             elapsed: usePlayerStore.getState().currentTime,
+            playbackRate: usePlayerStore.getState().playbackSpeed,
             ticker: `正在播放: ${currentChapter.title}`,
             playIcon: '',
             pauseIcon: '',
@@ -435,27 +833,33 @@ const Player: React.FC = () => {
         usePlayerStore.getState().prevChapter();
     });
     MusicControls.addListener('music-controls-pause', () => {
-        usePlayerStore.getState().togglePlay();
+        requestPause();
     });
     MusicControls.addListener('music-controls-play', () => {
-        usePlayerStore.getState().togglePlay();
+        void requestPlay('remote');
     });
     MusicControls.addListener('music-controls-destroy', () => {
-        usePlayerStore.getState().togglePlay();
+        requestPause();
     });
     MusicControls.addListener('music-controls-toggle-play-pause', () => {
-        usePlayerStore.getState().togglePlay();
+        togglePlayback();
     });
     MusicControls.addListener('music-controls-seek-to', (payload: { position: number }) => {
         const time = payload.position;
-        if (audioRef.current) {
+        if (isNative && mediaRef.current && !shouldTranscode) {
+            performSeek(time);
+        } else if (!isNative && audioRef.current && !shouldTranscode) {
             audioRef.current.currentTime = time;
+        } else if (shouldTranscode) {
+            performSeek(time);
+        }
+        
+        if (!shouldTranscode) {
             usePlayerStore.getState().setCurrentTime(time);
-            
-            // Immediate update for native UI to avoid jumping back
             MusicControls.updateElapsed({
                 elapsed: time,
-                isPlaying: usePlayerStore.getState().isPlaying
+                isPlaying: usePlayerStore.getState().isPlaying,
+                playbackRate: usePlayerStore.getState().playbackSpeed
             });
         }
     });
@@ -463,18 +867,113 @@ const Player: React.FC = () => {
     return () => {
         MusicControls.removeAllListeners();
     };
-  }, []);
+  }, [requestPause, requestPlay, togglePlayback, isNative, performSeek, shouldTranscode]);
 
   // Update Controls: Play/Pause State
   useEffect(() => {
       MusicControls.updateIsPlaying({
           isPlaying: isPlaying,
-          elapsed: usePlayerStore.getState().currentTime
+          elapsed: usePlayerStore.getState().currentTime,
+          playbackRate: usePlayerStore.getState().playbackSpeed
       });
   }, [isPlaying]);
 
+  useEffect(() => {
+    if (!isPlaying || !currentChapter?.id) return;
+
+    const syncPlaybackState = () => {
+      const audio = audioRef.current;
+      if (!audio) return;
+
+      const liveTime = audio.currentTime;
+      const liveDuration = Number.isFinite(audio.duration) ? audio.duration : usePlayerStore.getState().duration;
+
+      if (!isSeeking && Number.isFinite(liveTime) && Math.abs(liveTime - usePlayerStore.getState().currentTime) > 0.5) {
+        usePlayerStore.getState().setCurrentTime(liveTime);
+      }
+
+      if (Number.isFinite(liveTime)) {
+        lastKnownAudioTimeRef.current = liveTime;
+        syncMusicControlsElapsed(liveTime);
+      }
+
+      if (liveDuration > 0 && (audio.ended || liveTime >= liveDuration - 0.25)) {
+        finalizeChapterPlayback(currentChapter.id, liveDuration);
+      }
+    };
+
+    syncPlaybackState();
+    playbackWatchdogRef.current = setInterval(syncPlaybackState, 1000);
+
+    return () => {
+      if (playbackWatchdogRef.current) {
+        clearInterval(playbackWatchdogRef.current);
+        playbackWatchdogRef.current = null;
+      }
+    };
+  }, [isPlaying, isSeeking, currentChapter?.id, finalizeChapterPlayback, syncMusicControlsElapsed]);
+
+  // Sync Native Media source loading
+  useEffect(() => {
+    if (!currentChapter || !isNative) return;
+    
+    let isMounted = true;
+    const chapterId = currentChapter.id;
+    
+    const loadAndPlay = async () => {
+        let url = getStreamUrl(chapterId);
+        
+        if (!isMounted) return;
+        if (currentChapter.id !== chapterId) return;
+
+        let resumeTime = usePlayerStore.getState().currentTime;
+        
+        if (isInitialLoadRef.current && currentChapter.id === chapterId) {
+            if (currentChapter && currentChapter.duration && currentChapter.duration > 0) {
+                if (currentChapter.duration - resumeTime < 2 || resumeTime / currentChapter.duration > 0.99) {
+                    resumeTime = 0;
+                    usePlayerStore.getState().setCurrentTime(0);
+                }
+            }
+        }
+
+        if (shouldTranscode && isInitialLoadRef.current && currentChapter.id === chapterId) {
+            if (resumeTime > 0) {
+                streamOffsetRef.current = resumeTime;
+                url = getStreamUrl(chapterId, resumeTime);
+            } else {
+                streamOffsetRef.current = 0;
+            }
+        } else {
+            streamOffsetRef.current = 0;
+        }
+
+        initNativeMedia(url);
+    };
+
+    loadAndPlay();
+
+    return () => {
+        isMounted = false;
+    };
+  }, [currentChapter, retryCount, shouldTranscode, getStreamUrl, initNativeMedia, setCurrentTime, isNative]);
+
+  // Cleanup native media on unmount
+  useEffect(() => {
+      return () => {
+          if (mediaRef.current) {
+              mediaRef.current.release();
+              mediaRef.current = null;
+          }
+          if (mediaTimerRef.current) {
+              clearInterval(mediaTimerRef.current);
+          }
+      };
+  }, []);
+
   // Sync state with audio element
   useEffect(() => {
+    if (isNative) return;
     if (!audioRef.current || !currentChapter) return;
     setTimeout(() => setError(null), 0); // Clear error on source change
     
@@ -493,15 +992,14 @@ const Player: React.FC = () => {
             return;
           }
           console.error('播放失败', err);
-          // Don't set user-visible error yet, let onError handler try to recover first
-          // setError('播放失败，可能是文件格式不支持或网络错误');
+          markPlaybackPaused(audioRef.current?.currentTime);
         });
       }
     } else {
       audioRef.current.pause();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPlaying, currentChapter?.id, retryCount, shouldTranscode]);
+  }, [isPlaying, currentChapter?.id, retryCount, shouldTranscode, markPlaybackPaused]);
 
   // Preload and Server-side Cache next chapter logic
   useEffect(() => {
@@ -560,6 +1058,7 @@ const Player: React.FC = () => {
     }
 
     setCurrentTime(time);
+    syncMusicControlsElapsed(time);
 
     // Update buffered time more accurately
     if (audioRef.current.buffered.length > 0) {
@@ -629,7 +1128,7 @@ const Player: React.FC = () => {
 
   // Handle Sleep Timer Countdown
   useEffect(() => {
-    if (sleepTimer === null || sleepTimer <= 0 || !isPlaying || !sleepTimerEndTimeRef.current) return;
+    if (sleepTimer === null || sleepTimer <= 0 || !sleepTimerEndTimeRef.current) return;
 
     // Clear any existing interval
     if (sleepTimerIntervalRef.current) {
@@ -640,7 +1139,21 @@ const Player: React.FC = () => {
     const interval = setInterval(() => {
       if (sleepTimerEndTimeRef.current) {
         const remaining = Math.max(0, Math.floor((sleepTimerEndTimeRef.current - Date.now()) / 1000));
-        setSleepTimer(remaining);
+        
+        // If timer is up or past due, stop the timer immediately
+        if (remaining === 0) {
+            if (usePlayerStore.getState().isPlaying) {
+                requestPause();
+            }
+            sleepTimerEndTimeRef.current = null;
+            if (sleepTimerIntervalRef.current) {
+                clearInterval(sleepTimerIntervalRef.current);
+                sleepTimerIntervalRef.current = null;
+            }
+            setTimeout(() => setSleepTimer(null), 0);
+        } else {
+            setSleepTimer(remaining);
+        }
       }
     }, 1000);
 
@@ -653,13 +1166,13 @@ const Player: React.FC = () => {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sleepTimer === null, isPlaying]);
+  }, [sleepTimer === null, requestPause]);
 
-  // Handle Sleep Timer Expiration
+  // Handle Sleep Timer Expiration (Fallback for immediate state changes)
   useEffect(() => {
     if (sleepTimer === 0) {
-      if (isPlaying) {
-        togglePlay();
+      if (usePlayerStore.getState().isPlaying) {
+        requestPause();
       }
       
       // Reset sleep timer references
@@ -671,17 +1184,32 @@ const Player: React.FC = () => {
       
       setTimeout(() => setSleepTimer(null), 0);
     }
-  }, [sleepTimer, isPlaying, togglePlay]);
+  }, [sleepTimer, requestPause]);
 
   useEffect(() => {
-    if (!audioRef.current) return;
-    audioRef.current.playbackRate = playbackSpeed;
-  }, [playbackSpeed]);
+    if (isNative && mediaRef.current && typeof mediaRef.current.setRate === 'function') {
+      mediaRef.current.setRate(playbackSpeed);
+    }
+    if (!isNative && audioRef.current) {
+      audioRef.current.playbackRate = playbackSpeed;
+    }
+  }, [playbackSpeed, isNative]);
 
   useEffect(() => {
-    if (!audioRef.current) return;
-    audioRef.current.volume = isMuted ? 0 : volume;
-  }, [volume, isMuted]);
+    const vol = isMuted ? 0 : volume;
+    if (isNative && mediaRef.current && typeof mediaRef.current.setVolume === 'function') {
+      mediaRef.current.setVolume(vol);
+    }
+    if (!isNative && audioRef.current) {
+      audioRef.current.volume = vol;
+    }
+  }, [volume, isMuted, isNative]);
+
+  useEffect(() => {
+    return () => {
+      clearResumeRecoveryTimer();
+    };
+  }, [clearResumeRecoveryTimer]);
 
   const currentTimeRef = useRef(0);
   useEffect(() => {
@@ -756,14 +1284,13 @@ const Player: React.FC = () => {
     }
   };
 
-  const [isSeeking, setIsSeeking] = useState(false);
-  const [seekTime, setSeekTime] = useState(0);
-
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
     setSeekTime(time);
     if (!isSeeking) {
-      if (audioRef.current) {
+      if (isNative && mediaRef.current && !shouldTranscode) {
+        performSeek(time);
+      } else if (!isNative && audioRef.current && !shouldTranscode) {
         audioRef.current.currentTime = time;
       }
       setCurrentTime(time);
@@ -778,7 +1305,24 @@ const Player: React.FC = () => {
   const handleSeekEnd = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
     setIsSeeking(false);
-    if (audioRef.current) {
+    isSeekingRef.current = false;
+
+    if (shouldTranscode) {
+      streamOffsetRef.current = time;
+      const url = getStreamUrl(currentChapter!.id, time) + (retryCount > 0 ? `&retry=${retryCount}` : '');
+      if (isNative) initNativeMedia(url);
+      else if (audioRef.current) {
+        audioRef.current.src = url;
+        audioRef.current.load();
+        audioRef.current.play().catch(() => {});
+      }
+      setCurrentTime(time);
+      return;
+    }
+
+    if (isNative && mediaRef.current) {
+      performSeek(time);
+    } else if (!isNative && audioRef.current) {
       audioRef.current.currentTime = time;
     }
     setCurrentTime(time);
@@ -885,14 +1429,9 @@ const Player: React.FC = () => {
   } : {};
 
   const handleEnded = () => {
-    if (currentBook && currentChapter) {
-      apiClient.post('/api/progress', {
-        bookId: currentBook.id,
-        chapterId: currentChapter.id,
-        position: Math.floor(duration)
-      }).catch(err => console.error('同步最终进度失败', err));
+    if (currentChapter?.id) {
+      finalizeChapterPlayback(currentChapter.id, duration);
     }
-    nextChapter();
   };
 
   return (
@@ -907,78 +1446,88 @@ const Player: React.FC = () => {
       `}
       style={miniPlayerStyle}
     >
-      <audio
-        ref={audioRef}
-        src={getStreamUrl(currentChapter.id)}
-        crossOrigin="anonymous"
-        onTimeUpdate={handleTimeUpdate}
-        onProgress={handleProgress}
-        onLoadedMetadata={handleLoadedMetadata}
-        onEnded={handleEnded}
-        onPlay={() => {
-          setIsPlaying(true);
-          if (audioRef.current) {
-            audioRef.current.playbackRate = playbackSpeed;
-          }
-        }}
-        onPause={() => {
-          const state = usePlayerStore.getState();
-          // If the user wants to ignore audio focus, and the player was unexpectedly paused 
-          // by the system (i.e. isPlaying is still true in the store), force it to resume.
-          if (state.ignoreAudioFocus && state.isPlaying) {
-             console.log('System paused audio but ignoreAudioFocus is true, forcing play...');
-             setTimeout(() => {
-                if (audioRef.current && usePlayerStore.getState().isPlaying) {
-                   audioRef.current.play().catch(err => console.error('Force play failed', err));
-                }
-             }, 50);
-          } else {
-             setIsPlaying(false);
-          }
-        }}
-        onError={(e) => {
-          const audio = audioRef.current;
-          console.log('触发音频错误事件', { 
-            error: audio?.error, 
-            code: audio?.error?.code, 
-            message: audio?.error?.message,
-            retryCount,
-            shouldTranscode
-          });
+      {!isNative && (
+        <audio
+          ref={audioRef}
+          src={getStreamUrl(currentChapter.id)}
+          crossOrigin="anonymous"
+          onTimeUpdate={handleTimeUpdate}
+          onProgress={handleProgress}
+          onLoadedMetadata={handleLoadedMetadata}
+          onEnded={handleEnded}
+          onPlay={() => {
+            if (currentChapter?.id && chapterEndHandledRef.current === currentChapter.id && (audioRef.current?.currentTime ?? 0) < 1) {
+              chapterEndHandledRef.current = null;
+            }
+            setIsPlaying(true);
+            if (audioRef.current) {
+              audioRef.current.playbackRate = playbackSpeed;
+            }
+          }}
+          onPause={() => {
+            const audio = audioRef.current;
+            const state = usePlayerStore.getState();
+            const liveTime = audio?.currentTime ?? state.currentTime;
+            const liveDuration = Number.isFinite(audio?.duration) ? (audio?.duration ?? 0) : state.duration;
+            const reachedEnd = !!audio && (
+              audio.ended ||
+              (Number.isFinite(liveDuration) && liveDuration > 0 && liveTime >= liveDuration - 0.25)
+            );
 
-          if (audio && audio.error) {
-            // Ignore aborted errors (code 4) ONLY if we are not already trying to recover
-            // Actually code 4 is MEDIA_ERR_SRC_NOT_SUPPORTED, which is exactly what we want to catch for WMA
-            // Code 1 is MEDIA_ERR_ABORTED
-            
-            if (audio.error.code === 1) {
-              console.log('播放已中止 (用户操作)');
+            if (reachedEnd && currentChapter?.id) {
+              finalizeChapterPlayback(currentChapter.id, liveDuration || liveTime);
               return;
             }
 
-            // Auto retry on network (2), decode error (3) or source not supported (4)
-            // We include network error (2) in retry logic just in case, but transcode mainly fixes 3 & 4
-            if (retryCount < 3) {
-                 console.log(`Playback error ${audio.error.code}, 使用转码重试 (${retryCount + 1}/3)...`);
-                 setShouldTranscode(true);
-                 setRetryCount(prev => prev + 1);
-                 return;
+            // If the user wants to ignore audio focus, and the player was unexpectedly paused 
+            // by the system (i.e. isPlaying is still true in the store), force it to resume.
+            if (state.ignoreAudioFocus && state.isPlaying) {
+               console.log('System paused audio but ignoreAudioFocus is true, forcing play...');
+               setTimeout(() => {
+                  if (audioRef.current && usePlayerStore.getState().isPlaying) {
+                     void requestPlay('resume-check');
+                  }
+               }, 50);
+            } else {
+               markPlaybackPaused(liveTime);
             }
-            console.error('音频元素错误', audio.error);
-          } else {
-            // Even if audio.error is null, if we have an error event and haven't retried max times, try transcoding
-            // This handles edge cases where browser doesn't populate error object properly
-            if (retryCount < 3) {
-                console.log('未知的音频错误，尝试转码重试...');
-                setShouldTranscode(true);
-                setRetryCount(prev => prev + 1);
+          }}
+          onError={(e) => {
+            const audio = audioRef.current;
+            console.log('触发音频错误事件', { 
+              error: audio?.error, 
+              code: audio?.error?.code, 
+              message: audio?.error?.message,
+              retryCount,
+              shouldTranscode
+            });
+
+            if (audio && audio.error) {
+              if (audio.error.code === 1) {
+                console.log('播放已中止 (用户操作)');
                 return;
+              }
+
+              if (retryCount < 3) {
+                   console.log(`Playback error ${audio.error.code}, 使用转码重试 (${retryCount + 1}/3)...`);
+                   setShouldTranscode(true);
+                   setRetryCount(prev => prev + 1);
+                   return;
+              }
+              console.error('音频元素错误', audio.error);
+            } else {
+              if (retryCount < 3) {
+                  console.log('未知的音频错误，尝试转码重试...');
+                  setShouldTranscode(true);
+                  setRetryCount(prev => prev + 1);
+                  return;
+              }
+              console.error('音频元素错误 (未知)', e);
             }
-            console.error('音频元素错误 (未知)', e);
-          }
-          setError('音频加载出错，请尝试重新扫描库或稍后再试');
-        }}
-      />
+            setError('音频加载出错，请尝试重新扫描库或稍后再试');
+          }}
+        />
+      )}
 
       {error && !isExpanded && (
         <div className="absolute top-0 left-4 right-4 bg-red-500 text-white text-[10px] py-1 px-2 text-center rounded-t-lg animate-pulse z-[101]">
@@ -1077,14 +1626,19 @@ const Player: React.FC = () => {
                   <SkipBack size={20} fill="currentColor" />
                 </button>
                 <button 
-                  onClick={() => { if (audioRef.current) audioRef.current.currentTime -= 15; }}
+                  onClick={() => { 
+                  const current = usePlayerStore.getState().currentTime;
+                  const newTime = Math.max(0, current - 15);
+                  if (isNative) performSeek(newTime);
+                  else if (audioRef.current) audioRef.current.currentTime -= 15;
+                }}
                   className={`${useDarkControls ? 'text-slate-200 hover:text-white' : 'text-slate-400 dark:text-slate-300'} hover:scale-110 transition-all`}
                   style={{ color: (miniPlayerThemeColor && !useDarkControls) ? (isLight(miniPlayerThemeColor) ? '#475569' : setAlpha(miniPlayerThemeColor, 0.6)) : undefined }}
                 >
                   <RotateCcw size={18} />
                 </button>
                 <button 
-                  onClick={togglePlay}
+                  onClick={togglePlayback}
                   className={`w-10 h-10 rounded-full text-white flex items-center justify-center shadow-lg hover:scale-105 transition-all ${!effectiveThemeColor ? 'bg-primary-600 dark:bg-primary-600' : ''}`}
                   style={{ 
                     backgroundColor: effectiveThemeColor ? toSolidColor(effectiveThemeColor) : undefined,
@@ -1095,7 +1649,12 @@ const Player: React.FC = () => {
                   {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-1" />}
                 </button>
                 <button 
-                  onClick={() => { if (audioRef.current) audioRef.current.currentTime += 30; }}
+                  onClick={() => { 
+                  const current = usePlayerStore.getState().currentTime;
+                  const newTime = current + 30;
+                  if (isNative) performSeek(newTime);
+                  else if (audioRef.current) audioRef.current.currentTime += 30;
+                }}
                   className={`${useDarkControls ? 'text-slate-200 hover:text-white' : 'text-slate-400 dark:text-slate-300'} hover:scale-110 transition-all`}
                   style={{ color: (miniPlayerThemeColor && !useDarkControls) ? (isLight(miniPlayerThemeColor) ? '#475569' : setAlpha(miniPlayerThemeColor, 0.6)) : undefined }}
                 >
@@ -1148,7 +1707,12 @@ const Player: React.FC = () => {
                 {isWidgetMode && (
                   <div className="flex items-center gap-1">
                     <button 
-                    onClick={() => { if (audioRef.current) audioRef.current.currentTime -= 15; }}
+                    onClick={() => { 
+                    const current = usePlayerStore.getState().currentTime;
+                    const newTime = Math.max(0, current - 15);
+                    if (isNative) performSeek(newTime);
+                    else if (audioRef.current) audioRef.current.currentTime -= 15;
+                  }}
                     className={`p-1.5 transition-colors hover:text-primary-500 ${useDarkControls ? 'text-slate-200' : 'text-slate-400 dark:text-slate-300'}`}
                     style={{ color: (miniPlayerThemeColor && !useDarkControls) ? (isLight(miniPlayerThemeColor) ? '#475569' : setAlpha(miniPlayerThemeColor, 0.6)) : undefined }}
                   >
@@ -1164,7 +1728,7 @@ const Player: React.FC = () => {
                   </div>
                 )}
                 <button 
-                  onClick={togglePlay}
+                  onClick={togglePlayback}
                   className={`w-10 h-10 max-[380px]:w-8 max-[380px]:h-8 rounded-full text-white flex items-center justify-center shadow-md hover:scale-105 transition-transform ${!effectiveThemeColor ? 'bg-primary-600 dark:bg-primary-600' : ''}`}
                   style={{ 
                     backgroundColor: effectiveThemeColor ? toSolidColor(effectiveThemeColor) : undefined,
@@ -1184,7 +1748,12 @@ const Player: React.FC = () => {
                       <SkipForward size={16} fill="currentColor" />
                     </button>
                     <button 
-                      onClick={() => { if (audioRef.current) audioRef.current.currentTime += 30; }}
+                      onClick={() => { 
+                      const current = usePlayerStore.getState().currentTime;
+                      const newTime = current + 30;
+                      if (isNative) performSeek(newTime);
+                      else if (audioRef.current) audioRef.current.currentTime += 30;
+                    }}
                       className={`p-1.5 transition-colors hover:text-primary-500 ${useDarkControls ? 'text-slate-200' : 'text-slate-400 dark:text-slate-300'}`}
                       style={{ color: (miniPlayerThemeColor && !useDarkControls) ? (isLight(miniPlayerThemeColor) ? '#475569' : setAlpha(miniPlayerThemeColor, 0.6)) : undefined }}
                     >
@@ -1472,7 +2041,12 @@ const Player: React.FC = () => {
               {/* Main Controls */}
               <div className="flex items-center justify-center gap-4 sm:gap-10 md:gap-14">
                 <button 
-                  onClick={() => { if (audioRef.current) audioRef.current.currentTime -= 15; }}
+                  onClick={() => { 
+                  const current = usePlayerStore.getState().currentTime;
+                  const newTime = Math.max(0, current - 15);
+                  if (isNative) performSeek(newTime);
+                  else if (audioRef.current) audioRef.current.currentTime -= 15;
+                }}
                   className="text-slate-600 dark:text-slate-400 p-1.5 sm:p-2 hover:scale-110 transition-transform"
                 >
                   <div className="relative">
@@ -1488,7 +2062,7 @@ const Player: React.FC = () => {
                 </button>
                 
                 <button 
-                  onClick={togglePlay}
+                  onClick={togglePlayback}
                   className={`w-16 h-16 sm:w-24 sm:h-24 rounded-full text-white flex items-center justify-center shadow-2xl transform hover:scale-105 active:scale-95 transition-all ${!effectiveThemeColor ? 'bg-primary-600' : ''}`}
                   style={effectiveThemeColor ? { 
                     backgroundColor: toSolidColor(effectiveThemeColor),
@@ -1505,7 +2079,12 @@ const Player: React.FC = () => {
                   <SkipForward size={28} className="sm:w-9 sm:h-9" fill="currentColor" />
                 </button>
                 <button 
-                  onClick={() => { if (audioRef.current) audioRef.current.currentTime += 15; }}
+                  onClick={() => { 
+                  const current = usePlayerStore.getState().currentTime;
+                  const newTime = current + 15;
+                  if (isNative) performSeek(newTime);
+                  else if (audioRef.current) audioRef.current.currentTime += 15;
+                }}
                   className="text-slate-600 dark:text-slate-400 p-1.5 sm:p-2 hover:scale-110 transition-transform"
                 >
                   <div className="relative">

@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import apiClient from '../api/client';
+import { safeStorage } from '../utils/storage';
 
 export type Theme = 'light' | 'dark' | 'system';
 
 export const useTheme = () => {
   const [theme, setTheme] = useState<Theme>(() => {
-    return (localStorage.getItem('theme') as Theme) || 'system';
+    return (safeStorage.getItem('theme') as Theme) || 'system';
   });
 
   const applyThemeToDom = (t: Theme) => {
@@ -18,7 +19,7 @@ export const useTheme = () => {
     }
 
     root.classList.add(effectiveTheme);
-    localStorage.setItem('theme', t);
+    safeStorage.setItem('theme', t);
   };
 
   const applyTheme = (t: Theme) => {
@@ -44,7 +45,7 @@ export const useTheme = () => {
 
   const refreshTheme = async () => {
     // Skip if offline or no token
-    const token = localStorage.getItem('auth_token');
+    const token = safeStorage.getItem('auth_token');
     if (!token || !navigator.onLine) return;
 
     try {

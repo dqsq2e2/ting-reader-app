@@ -82,7 +82,8 @@ export const usePlayerStore = create<PlayerState>()(
           chapters, 
           currentChapter: chapter,
           isPlaying: true,
-          currentTime: chapter.progressPosition || 0
+          currentTime: chapter.progressPosition || 0,
+          duration: chapter.duration || 0
         };
 
         if (book.themeColor && !isTooLight(book.themeColor)) {
@@ -139,7 +140,8 @@ export const usePlayerStore = create<PlayerState>()(
           chapters, 
           currentChapter: chapter, 
           isPlaying: true, 
-          currentTime: resumePosition ?? (chapter.progressPosition || 0)
+          currentTime: resumePosition ?? (chapter.progressPosition || 0),
+          duration: chapter.duration || 0
         };
         
         if (book.themeColor && !isTooLight(book.themeColor)) {
