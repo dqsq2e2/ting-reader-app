@@ -448,8 +448,8 @@ const SettingsPage: React.FC = () => {
 
             <div className="flex items-center justify-between gap-4 pt-4 border-t border-slate-100 dark:border-slate-800">
               <div className="flex-1 min-w-0">
-                <p className="font-bold dark:text-white truncate">忽略音频焦点 (同时播放)</p>
-                <p className="text-xs md:text-sm text-slate-500 line-clamp-2">允许与其他应用同时播放音频，开启后可能需要重启应用生效 (仅移动端)</p>
+                <p className="font-bold dark:text-white truncate">允许同时播放音频</p>
+                <p className="text-xs md:text-sm text-slate-500 line-clamp-2">开启后可与其他应用（如音乐播放器）同时播放，切换章节时生效 (仅移动端)</p>
               </div>
               <button
                 onClick={() => {

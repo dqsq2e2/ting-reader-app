@@ -37,6 +37,7 @@ const BookDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user } = useAuthStore();
+  
   const [book, setBook] = useState<Book | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [loading, setLoading] = useState(true);
@@ -251,7 +252,8 @@ const BookDetailPage: React.FC = () => {
   const handlePlayClick = () => {
     if (resumeChapter) {
       // If we have a resume chapter, play it and scroll to it
-      playChapter(book!, currentChapters, resumeChapter);
+      // IMPORTANT: Pass ALL chapters, not just currentChapters
+      playChapter(book!, chapters, resumeChapter);
       
       // Scroll logic
       const targetChapter = resumeChapter;
@@ -281,8 +283,8 @@ const BookDetailPage: React.FC = () => {
       
       scrollToChapterElement(targetChapter.id, targetList);
     } else {
-      // Default play behavior
-      playBook(book!, currentChapters);
+      // Default play behavior - pass ALL chapters
+      playBook(book!, chapters);
     }
   };
 
@@ -742,7 +744,10 @@ const BookDetailPage: React.FC = () => {
               <div 
                 key={chapter.id}
                 id={`chapter-${chapter.id}`}
-                onClick={() => playChapter(book!, currentChapters, chapter)}
+                onClick={() => {
+                  // 统一使用 playChapter，让同步机制处理原生播放器
+                  playChapter(book!, chapters, chapter);
+                }}
                 className={`group flex items-center justify-between p-4 rounded-2xl cursor-pointer transition-all border ${
                   isActive 
                     ? 'bg-opacity-10 border-opacity-20' 
@@ -806,7 +811,8 @@ const BookDetailPage: React.FC = () => {
                       className="w-10 h-10 rounded-full bg-slate-50 dark:bg-slate-800 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all cursor-pointer hover:scale-105"
                       onClick={(e) => {
                         e.stopPropagation();
-                        playChapter(book!, currentChapters, chapter);
+                        // 统一使用 playChapter，让同步机制处理原生播放器
+                        playChapter(book!, chapters, chapter);
                       }}
                     >
                       <Play size={16} className="text-primary-600 ml-1" fill="currentColor" style={effectiveThemeColor ? { color: toSolidColor(effectiveThemeColor) } : {}} />

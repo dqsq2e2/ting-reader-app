@@ -120,7 +120,12 @@ export const usePlayerStore = create<PlayerState>()(
         const index = chapters.findIndex(c => c.id === currentChapter.id);
         if (index !== -1 && index < chapters.length - 1) {
           const nextChapter = chapters[index + 1];
-          get().playChapter(currentBook, chapters, nextChapter);
+          // Update state
+          set({
+            currentChapter: nextChapter,
+            currentTime: nextChapter.progressPosition || 0,
+            duration: nextChapter.duration || 0
+          });
         }
       },
 
@@ -130,14 +135,20 @@ export const usePlayerStore = create<PlayerState>()(
         const index = chapters.findIndex(c => c.id === currentChapter.id);
         if (index > 0) {
           const prevChapter = chapters[index - 1];
-          get().playChapter(currentBook, chapters, prevChapter);
+          // Update state
+          set({
+            currentChapter: prevChapter,
+            currentTime: prevChapter.progressPosition || 0,
+            duration: prevChapter.duration || 0
+          });
         }
       },
 
       playChapter: (book, chapters, chapter, resumePosition) => {
+        // Store ALL chapters (not just current tab's chapters)
         const newState: Partial<PlayerState> = { 
           currentBook: book, 
-          chapters, 
+          chapters,  // This should be ALL chapters from the book
           currentChapter: chapter, 
           isPlaying: true, 
           currentTime: resumePosition ?? (chapter.progressPosition || 0),
