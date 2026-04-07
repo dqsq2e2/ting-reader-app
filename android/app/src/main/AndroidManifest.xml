@@ -28,6 +28,14 @@
             android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- Player Notification Service -->
+        <service
+            android:name=".player.PlayerNotificationService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback">
+        </service>
     </application>
 
     <!-- Permissions -->
