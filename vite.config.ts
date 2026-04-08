@@ -10,7 +10,7 @@ export default defineConfig({
       targets: ['defaults', 'not IE 11', 'chrome >= 49', 'safari >= 10'],
     })
   ],
-  base: './',
+  base: '/',
   build: {
     outDir: 'dist',
     minify: 'terser',
