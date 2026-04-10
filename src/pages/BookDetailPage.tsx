@@ -25,7 +25,6 @@ import {
   AlertTriangle,
   Settings,
   RefreshCw,
-  Wand2,
   FileSignature
 } from 'lucide-react';
 import { getCoverUrl } from '../utils/image';
@@ -61,39 +60,11 @@ const BookDetailPage: React.FC = () => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasInitialScrolled = useRef(false);
   const [highlightedChapterId, setHighlightedChapterId] = useState<string | null>(null);
+  const playButtonContainerRef = useRef<HTMLDivElement>(null);
+  const [isPlayButtonTextOverflowing, setIsPlayButtonTextOverflowing] = useState(false);
 
   // User Settings
   const [coverShape, setCoverShape] = useState<'rect' | 'square'>('rect');
-
-  // Regex Generator State
-  const [showRegexGenerator, setShowRegexGenerator] = useState(false);
-  const [genFilename, setGenFilename] = useState('');
-  const [genNum, setGenNum] = useState('');
-  const [genTitle, setGenTitle] = useState('');
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [genResult, setGenResult] = useState<any>(null);
-
-  const handleGenerateRegex = async () => {
-    if (!genFilename || !genNum || !genTitle) return;
-    try {
-      const res = await apiClient.post('/api/tools/regex/generate', {
-        filename: genFilename,
-        chapter_number: genNum,
-        chapter_title: genTitle
-      });
-      setGenResult(res.data);
-    } catch {
-      alert('生成失败');
-    }
-  };
-
-  const applyGeneratedRegex = () => {
-    if (genResult?.regex) {
-      setEditData({ ...editData, chapterRegex: genResult.regex });
-      setShowRegexGenerator(false);
-      setGenResult(null);
-    }
-  };
 
   // Reset scroll state when book ID changes
   useEffect(() => {
@@ -143,7 +114,6 @@ const BookDetailPage: React.FC = () => {
     return g;
   }, [currentChapters]);
 
-  const playBook = usePlayerStore((state) => state.playBook);
   const isPlaying = usePlayerStore((state) => state.isPlaying);
   const playChapter = usePlayerStore((state) => state.playChapter);
 
@@ -283,8 +253,12 @@ const BookDetailPage: React.FC = () => {
       
       scrollToChapterElement(targetChapter.id, targetList);
     } else {
-      // Default play behavior - pass ALL chapters
-      playBook(book!, chapters);
+      // No play history - play first main chapter
+      if (mainChapters.length > 0) {
+        playChapter(book!, chapters, mainChapters[0]);
+      } else if (chapters.length > 0) {
+        playChapter(book!, chapters, chapters[0]);
+      }
     }
   };
 
@@ -323,6 +297,71 @@ const BookDetailPage: React.FC = () => {
       clearTimeout(timer);
     };
   }, [book?.tags]);
+
+  // Check if play button text is overflowing
+  useEffect(() => {
+    const checkPlayButtonOverflow = () => {
+      if (!playButtonContainerRef.current) return;
+      
+      const button = playButtonContainerRef.current;
+      const computedStyle = window.getComputedStyle(button);
+      
+      // Get button dimensions
+      const buttonWidth = button.offsetWidth;
+      
+      // Parse padding from computed style
+      const paddingLeft = parseFloat(computedStyle.paddingLeft);
+      const paddingRight = parseFloat(computedStyle.paddingRight);
+      
+      // Icon width (18px) + gap (8px from gap-2 class)
+      const iconAndGapWidth = 18 + 8;
+      
+      // Calculate available width for text
+      const availableWidth = buttonWidth - paddingLeft - paddingRight - iconAndGapWidth;
+      
+      // Create temporary element to measure text width
+      const tempSpan = document.createElement('span');
+      tempSpan.style.visibility = 'hidden';
+      tempSpan.style.position = 'absolute';
+      tempSpan.style.whiteSpace = 'nowrap';
+      tempSpan.style.fontWeight = computedStyle.fontWeight;
+      tempSpan.style.fontSize = computedStyle.fontSize;
+      tempSpan.style.fontFamily = computedStyle.fontFamily;
+      
+      const text = resumeChapter && currentChapter?.bookId === book.id 
+        ? `正在播放：${resumeChapter.title}` 
+        : resumeChapter 
+        ? `继续播放：${resumeChapter.title}` 
+        : '立即播放';
+      
+      tempSpan.textContent = text;
+      document.body.appendChild(tempSpan);
+      const textWidth = tempSpan.offsetWidth;
+      document.body.removeChild(tempSpan);
+      
+      // Set overflow state with a small buffer (2px) to prevent edge cases
+      setIsPlayButtonTextOverflowing(textWidth > availableWidth - 2);
+    };
+
+    // Check immediately and after a delay to ensure layout is stable
+    checkPlayButtonOverflow();
+    const timer = setTimeout(checkPlayButtonOverflow, 100);
+    
+    // Check on resize with debounce
+    let resizeTimer: NodeJS.Timeout;
+    const handleResize = () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(checkPlayButtonOverflow, 50);
+    };
+    
+    window.addEventListener('resize', handleResize);
+    
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      clearTimeout(timer);
+      clearTimeout(resizeTimer);
+    };
+  }, [resumeChapter, currentChapter, book?.id]);
 
   const toggleFavorite = async () => {
     try {
@@ -554,6 +593,7 @@ const BookDetailPage: React.FC = () => {
 
             <div className="w-full flex flex-col gap-3 md:max-w-md mx-auto md:mx-0">
               <button 
+                ref={playButtonContainerRef}
                 onClick={handlePlayClick}
                 className="w-full flex items-center justify-center gap-2 px-5 sm:px-8 py-3.5 sm:py-4 bg-primary-600 hover:bg-primary-700 text-white font-bold rounded-2xl shadow-xl shadow-primary-500/30 transition-all active:scale-95 group"
                 style={effectiveThemeColor ? { 
@@ -562,8 +602,31 @@ const BookDetailPage: React.FC = () => {
                   color: isLight(effectiveThemeColor) ? '#475569' : '#ffffff'
                 } : {}}
               >
-                <Play size={18} fill="currentColor" />
-                {resumeChapter ? '继续播放' : '立即播放'}
+                <Play size={18} fill="currentColor" className="shrink-0" />
+                {isPlayButtonTextOverflowing ? (
+                  <div className="flex-1 min-w-0 overflow-hidden">
+                    <div className="whitespace-nowrap inline-block animate-scroll-text">
+                      {resumeChapter && currentChapter?.bookId === book.id 
+                        ? `正在播放：${resumeChapter.title}    ` 
+                        : resumeChapter 
+                        ? `继续播放：${resumeChapter.title}    ` 
+                        : '立即播放'}
+                      {(resumeChapter && currentChapter?.bookId === book.id 
+                        ? `正在播放：${resumeChapter.title}    ` 
+                        : resumeChapter 
+                        ? `继续播放：${resumeChapter.title}    ` 
+                        : '')}
+                    </div>
+                  </div>
+                ) : (
+                  <span className="truncate">
+                    {resumeChapter && currentChapter?.bookId === book.id 
+                      ? `正在播放：${resumeChapter.title}` 
+                      : resumeChapter 
+                      ? `继续播放：${resumeChapter.title}` 
+                      : '立即播放'}
+                  </span>
+                )}
               </button>
 
               <div className="w-full flex gap-2 sm:gap-3">
@@ -856,92 +919,6 @@ const BookDetailPage: React.FC = () => {
         <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setIsEditModalOpen(false)}></div>
           <div className="relative w-full max-w-2xl max-h-[90vh] bg-white dark:bg-slate-900 rounded-3xl shadow-2xl overflow-y-auto animate-in zoom-in-95 duration-200 no-scrollbar">
-            {showRegexGenerator ? (
-                <div className="p-4 sm:p-6 md:p-8">
-                    <div className="flex items-center justify-between mb-6">
-                        <h2 className="text-xl font-bold dark:text-white flex items-center gap-2">
-                            <Wand2 className="text-primary-600" /> 正则生成器
-                        </h2>
-                        <button onClick={() => setShowRegexGenerator(false)}><X size={24} className="text-slate-400" /></button>
-                    </div>
-                    
-                    <div className="space-y-4">
-                        <div className="space-y-1">
-                            <label className="text-xs font-bold text-slate-500">示例文件名 (不含后缀)</label>
-                            <input 
-                                type="text" 
-                                value={genFilename}
-                                onChange={e => setGenFilename(e.target.value)}
-                                placeholder="例如：书名 第1集 章节名"
-                                className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:ring-2 focus:ring-primary-500 dark:text-white"
-                            />
-                        </div>
-                        <div className="grid grid-cols-2 gap-4">
-                            <div className="space-y-1">
-                                <label className="text-xs font-bold text-slate-500">提取章节号</label>
-                                <input 
-                                    type="text" 
-                                    value={genNum}
-                                    onChange={e => setGenNum(e.target.value)}
-                                    placeholder="例如：1"
-                                    className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:ring-2 focus:ring-primary-500 dark:text-white"
-                                />
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-xs font-bold text-slate-500">提取章节名</label>
-                                <input 
-                                    type="text" 
-                                    value={genTitle}
-                                    onChange={e => setGenTitle(e.target.value)}
-                                    placeholder="例如：章节名"
-                                    className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:ring-2 focus:ring-primary-500 dark:text-white"
-                                />
-                            </div>
-                        </div>
-                        
-                        <button 
-                            onClick={handleGenerateRegex}
-                            disabled={!genFilename || !genNum || !genTitle}
-                            className="w-full py-3 bg-primary-600 hover:bg-primary-700 text-white font-bold rounded-xl shadow-lg shadow-primary-500/30 transition-all disabled:opacity-50"
-                        >
-                            生成规则
-                        </button>
-                        
-                        {genResult && (
-                            <div className="mt-6 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700 space-y-3">
-                                <div>
-                                    <div className="text-xs font-bold text-slate-500 mb-1">生成正则</div>
-                                    <code className="block p-2 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 font-mono text-sm text-primary-600 break-all">
-                                        {genResult.regex}
-                                    </code>
-                                </div>
-                                
-                                <div className="grid grid-cols-2 gap-4 text-sm">
-                                    <div>
-                                        <span className="text-slate-500 text-xs">提取序号:</span>
-                                        <div className={genResult.capturedIndex === genNum ? "text-green-600 font-bold" : "text-red-500"}>
-                                            {genResult.capturedIndex || "未匹配"}
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <span className="text-slate-500 text-xs">提取标题:</span>
-                                        <div className={genResult.capturedTitle === genTitle ? "text-green-600 font-bold" : "text-red-500"}>
-                                            {genResult.capturedTitle || "未匹配"}
-                                        </div>
-                                    </div>
-                                </div>
-                                
-                                <button 
-                                    onClick={applyGeneratedRegex}
-                                    className="w-full py-2 border-2 border-primary-600 text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/20 font-bold rounded-xl transition-all"
-                                >
-                                    使用此规则
-                                </button>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            ) : (
             <div className="p-4 sm:p-6 md:p-8">
               <div className="flex items-center justify-between mb-4 sm:mb-6">
                 <h2 className="text-xl sm:text-2xl font-bold dark:text-white">编辑书籍元数据</h2>
@@ -997,14 +974,8 @@ const BookDetailPage: React.FC = () => {
                   </div>
                   
                   <div className="space-y-1">
-                    <label className="text-[10px] sm:text-xs font-bold text-slate-500 uppercase tracking-wider flex justify-between items-center">
-                        <span>章节正则清洗规则</span>
-                        <button 
-                            onClick={() => setShowRegexGenerator(true)}
-                            className="text-primary-600 hover:text-primary-700 flex items-center gap-1"
-                        >
-                            <Wand2 size={12} /> 自动生成
-                        </button>
+                    <label className="text-[10px] sm:text-xs font-bold text-slate-500 uppercase tracking-wider">
+                        章节正则清洗规则
                     </label>
                     <input 
                       type="text" 
@@ -1097,7 +1068,6 @@ const BookDetailPage: React.FC = () => {
                 </div>
               </div>
             </div>
-            )}
           </div>
         </div>
       )}
