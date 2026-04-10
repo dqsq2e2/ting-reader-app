@@ -73,7 +73,7 @@ class PlayerNotificationService : Service() {
     private var channelName = "TingReader Channel"
 
     private var currentPlaylist: List<ChapterInfo> = emptyList()
-    private var currentBookTitle: String = ""
+    var currentBookTitle: String = ""
     private var currentBookAuthor: String = ""
     private var currentCoverUrl: String = ""
     var coverBitmap: Bitmap? = null
@@ -570,7 +570,9 @@ class TingMediaDescriptionAdapter(
     }
 
     override fun getCurrentContentText(player: Player): CharSequence {
-        return controller.metadata?.getString(MediaMetadataCompat.METADATA_KEY_TITLE) ?: ""
+        // 直接返回书名，而不是从 controller.metadata 获取
+        // 因为 MediaSessionConnector 会在章节切换时更新 metadata，导致 METADATA_KEY_TITLE 被覆盖为章节标题
+        return service.currentBookTitle
     }
 
     override fun getCurrentLargeIcon(
