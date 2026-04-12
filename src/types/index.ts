@@ -56,6 +56,7 @@ export interface Book {
   chapterRegex?: string;
   series?: string;
   seriesOrder?: number;
+  year?: number;
 }
 
 export interface Chapter {
