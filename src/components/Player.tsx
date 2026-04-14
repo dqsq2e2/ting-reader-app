@@ -1,4 +1,5 @@
 import { Capacitor } from '@capacitor/core';
+import { App as CapacitorApp } from '@capacitor/app';
 import React, { useEffect, useState, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { usePlayerStore } from '../store/playerStore';
@@ -22,7 +23,9 @@ import {
   ArrowLeft,
   ListMusic,
   X,
-  Check
+  Check,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
 import { getCoverUrl } from '../utils/image';
 import { setAlpha, toSolidColor, isLight, isTooLight } from '../utils/color';
@@ -87,6 +90,8 @@ const PlayerNative: React.FC = () => {
     setDuration,
     playbackSpeed,
     setPlaybackSpeed,
+    volume,
+    setVolume,
     themeColor,
     setThemeColor,
     setIsPlaying,
@@ -101,6 +106,8 @@ const PlayerNative: React.FC = () => {
   const location = useLocation();
   const [showChapters, setShowChapters] = useState(false);
   const [showSleepTimer, setShowSleepTimer] = useState(false);
+  const [showVolumeControl, setShowVolumeControl] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [currentGroupIndex, setCurrentGroupIndex] = useState(0);
   const [activeTab, setActiveTab] = useState<'main' | 'extra'>('main');
@@ -128,14 +135,76 @@ const PlayerNative: React.FC = () => {
   const [seekTime, setSeekTime] = useState(0);
   const bufferedTime = 0; // TODO: Implement buffering tracking
 
+  // 进度保存相关的 refs
+  const lastSavedProgressRef = useRef<{ bookId: string; chapterId: string; position: number } | null>(null);
+  const progressSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingProgressRef = useRef<{ bookId: string; chapterId: string; position: number } | null>(null);
+
   const getStreamUrl = React.useCallback((chapterId: string) => {
     return `${API_BASE_URL}/api/stream/${chapterId}?token=${token}`;
   }, [API_BASE_URL, token]);
+
+  // 保存进度到服务器（带节流和重试机制）
+  const saveProgressToServer = React.useCallback(async (bookId: string, chapterId: string, position: number, force: boolean = false) => {
+    // 检查是否需要保存（避免重复保存相同的进度）
+    const lastSaved = lastSavedProgressRef.current;
+    if (!force && lastSaved && 
+        lastSaved.bookId === bookId && 
+        lastSaved.chapterId === chapterId && 
+        Math.abs(lastSaved.position - position) < 3) {
+      return; // 位置变化小于3秒，跳过保存
+    }
+
+    try {
+      await apiClient.post('/api/progress', {
+        bookId,
+        chapterId,
+        position: Math.floor(position)
+      });
+      
+      // 保存成功，更新最后保存的进度
+      lastSavedProgressRef.current = { bookId, chapterId, position: Math.floor(position) };
+      pendingProgressRef.current = null;
+      console.log(`✓ 进度已保存: ${Math.floor(position)}s`);
+    } catch (err) {
+      console.error('✗ 同步进度失败:', err);
+      // 保存失败，记录待保存的进度（稍后重试）
+      pendingProgressRef.current = { bookId, chapterId, position: Math.floor(position) };
+    }
+  }, []);
+
+  // 节流保存进度（每5秒最多保存一次）
+  const throttledSaveProgress = React.useCallback((bookId: string, chapterId: string, position: number) => {
+    // 清除之前的定时器
+    if (progressSaveTimerRef.current) {
+      clearTimeout(progressSaveTimerRef.current);
+    }
+
+    // 设置新的定时器（5秒后保存）
+    progressSaveTimerRef.current = setTimeout(() => {
+      saveProgressToServer(bookId, chapterId, position, false);
+    }, 5000);
+  }, [saveProgressToServer]);
+
+  // 强制立即保存进度（用于关键时刻）
+  const forceSaveProgress = React.useCallback(async () => {
+    if (currentBook && currentChapter) {
+      const position = Math.floor(currentTime);
+      console.log('🔒 强制保存进度:', position);
+      await saveProgressToServer(currentBook.id, currentChapter.id, position, true);
+    }
+  }, [currentBook, currentChapter, currentTime, saveProgressToServer]);
 
   // 初始化原生播放器
   const nativePlayer = useNativePlayer({
     onPlayingUpdate: (playing) => {
       setIsPlaying(playing);
+      
+      // 暂停时立即保存进度
+      if (!playing && currentBook && currentChapter) {
+        console.log('⏸️ 暂停播放，立即保存进度');
+        forceSaveProgress();
+      }
     },
     onPositionUpdate: (position, dur) => {
       setCurrentTime(position);
@@ -143,16 +212,18 @@ const PlayerNative: React.FC = () => {
         setDuration(dur);
       }
       
-      // 同步进度到服务器
+      // 使用节流机制保存进度（每5秒一次）
       if (currentBook && currentChapter) {
-        apiClient.post('/api/progress', {
-          bookId: currentBook.id,
-          chapterId: currentChapter.id,
-          position: Math.floor(position)
-        }).catch(err => console.error('同步进度失败', err));
+        throttledSaveProgress(currentBook.id, currentChapter.id, position);
       }
     },
     onChapterChanged: async (chapterIndex) => {
+      // 切换章节前，先保存当前章节的进度
+      if (currentBook && currentChapter) {
+        console.log('📖 章节切换，保存旧章节进度');
+        await forceSaveProgress();
+      }
+      
       // 更新当前章节
       if (allChapters[chapterIndex]) {
         const newChapter = allChapters[chapterIndex];
@@ -182,6 +253,65 @@ const PlayerNative: React.FC = () => {
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
     return () => observer.disconnect();
   }, []);
+
+  // 监听应用生命周期，在进入后台时保存进度
+  useEffect(() => {
+    if (!isNative) return;
+
+    // 应用状态变化监听（前台/后台切换）
+    const appStateListener = CapacitorApp.addListener('appStateChange', async (state) => {
+      console.log('📱 应用状态变化:', state.isActive ? '前台' : '后台');
+      
+      if (!state.isActive) {
+        // 应用进入后台，立即保存进度
+        console.log('🔄 应用进入后台，保存进度');
+        await forceSaveProgress();
+      }
+    });
+
+    // 应用即将被杀死时保存进度（Android 的 onDestroy）
+    const pauseListener = CapacitorApp.addListener('pause', async () => {
+      console.log('⏸️ 应用暂停（可能即将被杀死），保存进度');
+      await forceSaveProgress();
+    });
+
+    // 应用恢复时的监听（用于日志记录，不做进度恢复）
+    const resumeListener = CapacitorApp.addListener('resume', () => {
+      console.log('▶️ 应用恢复');
+      // 注意：不在这里恢复本地进度，因为这是多端同步项目
+      // 进度应该从服务器获取，确保多端数据一致
+    });
+
+    return () => {
+      appStateListener.then(listener => listener.remove());
+      pauseListener.then(listener => listener.remove());
+      resumeListener.then(listener => listener.remove());
+    };
+  }, [isNative, forceSaveProgress]);
+
+  // 组件卸载时保存进度
+  useEffect(() => {
+    return () => {
+      if (currentBook && currentChapter && currentTime > 0) {
+        console.log('🔚 播放器组件卸载，保存进度');
+        // 使用同步方式尝试保存（虽然不保证成功）
+        saveProgressToServer(currentBook.id, currentChapter.id, currentTime, true);
+      }
+    };
+  }, [currentBook, currentChapter, currentTime, saveProgressToServer]);
+
+  // 定期重试失败的进度保存（每30秒检查一次）
+  useEffect(() => {
+    const retryInterval = setInterval(() => {
+      if (pendingProgressRef.current) {
+        const pending = pendingProgressRef.current;
+        console.log('🔄 重试保存失败的进度:', pending.position);
+        saveProgressToServer(pending.bookId, pending.chapterId, pending.position, true);
+      }
+    }, 30000); // 30秒
+
+    return () => clearInterval(retryInterval);
+  }, [saveProgressToServer]);
 
   const effectiveThemeColor = themeColor && !isTooLight(themeColor) ? themeColor : undefined;
   const miniPlayerThemeColor = effectiveThemeColor;
@@ -254,7 +384,10 @@ const PlayerNative: React.FC = () => {
           isPlaying,
           currentBook.skipIntro || 0,
           currentBook.skipOutro || 0,
-          usePlayerStore.getState().ignoreAudioFocus
+          usePlayerStore.getState().ignoreAudioFocus,
+          currentBook.id,  // ⭐ 传递 bookId
+          API_BASE_URL,    // ⭐ 传递 API 地址
+          token            // ⭐ 传递认证 token
         );
 
         console.log(`已准备播放列表: ${allChapters.length} 集，从第 ${startIndex} 集开始`);
@@ -679,13 +812,84 @@ const PlayerNative: React.FC = () => {
       {isExpanded && (
         <div className="absolute inset-0 flex flex-col px-4 pt-[calc(3rem+env(safe-area-inset-top))] pb-40 sm:p-8 md:p-12 overflow-y-auto animate-in slide-in-from-bottom duration-500 xl:pb-12 bg-white dark:bg-slate-950" style={{ backgroundColor: isWidgetMode ? (effectiveThemeColor ? toSolidColor(effectiveThemeColor) : '#1e293b') : (effectiveThemeColor ? setAlpha(effectiveThemeColor, 0.05) : undefined) }}>
           <div className="flex items-center justify-between w-full max-w-4xl mx-auto mb-4 sm:mb-8 bg-white/60 dark:bg-slate-900/60 backdrop-blur-md p-2 sm:p-3 rounded-2xl shadow-sm border border-slate-200/30 dark:border-slate-800/30">
-            <button onClick={() => setIsExpanded(false)} className="p-1.5 sm:p-2 hover:bg-slate-100/50 dark:hover:bg-slate-800/50 rounded-full transition-colors">
-              <ArrowLeft size={20} className="sm:w-6 sm:h-6 dark:text-white text-[#4A3728]" />
-            </button>
+            {/* 左侧按钮组 */}
+            <div className="flex items-center gap-0.5 sm:gap-1">
+              <button onClick={() => setIsExpanded(false)} className="p-1.5 sm:p-2 hover:bg-slate-100/50 dark:hover:bg-slate-800/50 rounded-full transition-colors">
+                <ArrowLeft size={20} className="sm:w-6 sm:h-6 dark:text-white text-[#4A3728]" />
+              </button>
+              
+              {/* 音量控制 */}
+              <div className="relative" ref={volumeControlRef}>
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowVolumeControl(!showVolumeControl);
+                  }}
+                  className="p-1.5 sm:p-2 hover:bg-slate-100/50 dark:hover:bg-slate-800/50 rounded-full transition-colors"
+                  title="音量"
+                >
+                  {isMuted || volume === 0 ? (
+                    <VolumeX size={18} className="sm:w-5 sm:h-5 dark:text-white text-[#4A3728]" />
+                  ) : (
+                    <Volume2 size={18} className={`sm:w-5 sm:h-5 dark:text-white text-[#4A3728] ${showVolumeControl ? 'text-primary-600 dark:text-primary-600' : ''}`} />
+                  )}
+                </button>
+
+                {showVolumeControl && (
+                  <div 
+                    className="absolute top-full mt-3 left-0 bg-white dark:bg-slate-800 shadow-xl rounded-full py-4 border border-slate-100 dark:border-slate-700 w-12 flex flex-col items-center gap-3 z-[220] animate-in zoom-in-95 duration-200 cursor-default"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <span className="text-[10px] font-bold text-slate-500 min-w-[24px] text-center select-none">
+                      {Math.round(volume * 100)}
+                    </span>
+                    
+                    <div className="h-24 w-full flex items-center justify-center relative">
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="1" 
+                        step="0.01"
+                        value={volume}
+                        onChange={(e) => {
+                          const newVolume = parseFloat(e.target.value);
+                          setVolume(newVolume);
+                          nativePlayer.setVolume(newVolume);
+                          if (isMuted && newVolume > 0) setIsMuted(false);
+                        }}
+                        className="absolute w-24 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-primary-600 -rotate-90 hover:accent-primary-500"
+                      />
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        const newMuted = !isMuted;
+                        setIsMuted(newMuted);
+                        const newVolume = newMuted ? 0 : (volume === 0 ? 0.5 : volume);
+                        if (!newMuted && volume === 0) setVolume(0.5);
+                        nativePlayer.setVolume(newMuted ? 0 : newVolume);
+                      }}
+                      className={`p-2 rounded-full transition-colors ${
+                        isMuted 
+                          ? 'bg-primary-100 text-primary-600 dark:bg-primary-900/30' 
+                          : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
+                      }`}
+                      title={isMuted ? "取消静音" : "静音"}
+                    >
+                      {isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+            
+            {/* 标题居中 */}
             <div className="flex-1 text-center px-2 sm:px-4 min-w-0">
               <h2 className="text-sm sm:text-lg font-bold dark:text-white text-[#4A3728] truncate">{currentBook?.title}</h2>
               <p className="text-[10px] sm:text-xs text-slate-500 truncate">{currentChapter.title}</p>
             </div>
+            
+            {/* 右侧按钮组 */}
             <div className="flex items-center gap-0.5 sm:gap-1">
               <button onClick={() => setShowChapters(true)} className="p-1.5 sm:p-2 hover:bg-slate-100/50 dark:hover:bg-slate-800/50 rounded-full transition-colors" title="章节列表">
                 <ListMusic size={18} className="sm:w-5 sm:h-5 dark:text-white text-[#4A3728]" />
@@ -703,9 +907,9 @@ const PlayerNative: React.FC = () => {
 
             <div className="w-full space-y-8 sm:space-y-12">
               <div className="px-2 sm:px-4">
-                <div className="flex items-center gap-3 sm:gap-6">
+                <div className="flex items-center gap-3 sm:gap-6 justify-center">
                   <span className="text-[10px] sm:text-xs font-medium text-slate-500 dark:text-slate-400 min-w-[40px] text-right">{formatTime(currentTime)}</span>
-                  <div className="flex-1">
+                  <div className="flex-1 max-w-2xl">
                     <ProgressBar isSeeking={isSeeking} seekTime={seekTime} currentTime={currentTime} duration={duration} bufferedTime={bufferedTime} themeColor={themeColor} onSeek={handleSeek} onSeekStart={handleSeekStart} onSeekEnd={handleSeekEnd} />
                   </div>
                   <span className="text-[10px] sm:text-xs font-medium text-slate-500 dark:text-slate-400 min-w-[40px]">{formatTime(duration)}</span>
@@ -743,6 +947,7 @@ const PlayerNative: React.FC = () => {
                   </div>
                   <span className="text-[10px] sm:text-xs font-bold">{playbackSpeed}x</span>
                 </button>
+                
                 <div className="flex flex-col items-center gap-1 sm:gap-1.5">
                   <div className="p-2"><SkipBack size={18} className="sm:w-5 sm:h-5" /></div>
                   <span className="text-[10px] sm:text-xs font-bold whitespace-nowrap">片头 {currentBook?.skipIntro || 0}s</span>

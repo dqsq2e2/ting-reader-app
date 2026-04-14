@@ -78,7 +78,10 @@ export const useNativePlayer = (options: UseNativePlayerOptions = {}) => {
       playWhenReady: boolean = true,
       skipIntro: number = 0,
       skipOutro: number = 0,
-      ignoreAudioFocus: boolean = false
+      ignoreAudioFocus: boolean = false,
+      bookId: string = '',
+      apiBaseUrl: string = '',
+      authToken: string = ''
     ) => {
       if (!isNative) {
         console.warn('Native player only available on native platforms');
@@ -96,6 +99,9 @@ export const useNativePlayer = (options: UseNativePlayerOptions = {}) => {
         skipIntro,
         skipOutro,
         ignoreAudioFocus,
+        bookId,
+        apiBaseUrl,
+        authToken
       });
     },
     [isNative]
@@ -131,6 +137,14 @@ export const useNativePlayer = (options: UseNativePlayerOptions = {}) => {
     async (speed: number) => {
       if (!isNative) return;
       await TingAudioPlayer.setPlaybackSpeed({ speed });
+    },
+    [isNative]
+  );
+
+  const setVolume = useCallback(
+    async (volume: number) => {
+      if (!isNative) return;
+      await TingAudioPlayer.setVolume({ volume });
     },
     [isNative]
   );
@@ -186,6 +200,7 @@ export const useNativePlayer = (options: UseNativePlayerOptions = {}) => {
     seekTo,
     seekToChapter,
     setPlaybackSpeed,
+    setVolume,
     getCurrentPosition,
     getDuration,
     getCurrentChapterIndex,

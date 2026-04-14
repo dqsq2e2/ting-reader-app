@@ -18,6 +18,9 @@ export type PreparePlaylistOptions = {
   skipIntro?: number;
   skipOutro?: number;
   ignoreAudioFocus?: boolean;
+  bookId?: string;
+  apiBaseUrl?: string;
+  authToken?: string;
 }
 
 export type SetSleepTimerOptions = {
@@ -58,6 +61,11 @@ export interface TingAudioPlayerPlugin {
    * Set playback speed
    */
   setPlaybackSpeed(options: { speed: number }): Promise<void>;
+
+  /**
+   * Set volume (0.0 to 1.0)
+   */
+  setVolume(options: { volume: number }): Promise<void>;
 
   /**
    * Set sleep timer (in minutes, 0 to cancel)

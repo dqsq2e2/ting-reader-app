@@ -126,15 +126,20 @@ const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
              }
         }
 
-        // Handle redirect (similar to LoginPage logic)
-        if (responseRedirected) {
-          try {
-            console.log('Auto-login: Redirect detected to', responseUrl);
-            const baseUrl = responseUrl.replace(/\/api\/auth\/login\/?$/, '');
-            setActiveUrl(baseUrl);
-          } catch (e) {
-            console.error('Auto-login: Failed to parse redirect URL', e);
-          }
+        // Always update activeUrl (whether redirected or not)
+        // This ensures Layout's validation request uses the correct URL
+        try {
+          console.log('Auto-login: Response URL:', responseUrl, 'Redirected:', responseRedirected);
+          const baseUrl = responseUrl.replace(/\/api\/auth\/login\/?$/, '');
+          
+          // Use the response URL if valid, otherwise fall back to serverUrl
+          const finalUrl = baseUrl || serverUrl;
+          
+          console.log('Auto-login: Setting activeUrl to:', finalUrl);
+          setActiveUrl(finalUrl);
+        } catch {
+          console.error('Auto-login: Failed to parse response URL, using serverUrl:', serverUrl);
+          setActiveUrl(serverUrl);
         }
         
         // Handle 404/Method Not Allowed caused by 302 redirect turning POST into GET
@@ -153,7 +158,8 @@ const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
                     readTimeout: TIMEOUT_MS
                 });
                 if (retryResponse.status >= 200 && retryResponse.status < 300) {
-                     const baseUrl = retryResponse.url.replace(/\/api\/auth\/login\/?$/, '');
+                     const baseUrl = retryResponse.url.replace(/\/api\/auth\/login\/?$/, '') || serverUrl;
+                     console.log('Auto-login: Retry success, setting activeUrl to:', baseUrl);
                      setActiveUrl(baseUrl);
                      return { status: retryResponse.status, data: retryResponse.data };
                 }
@@ -165,7 +171,8 @@ const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
                     body: JSON.stringify({ username, password })
                 });
                 if (retryResponse.ok) {
-                     const baseUrl = retryResponse.url.replace(/\/api\/auth\/login\/?$/, '');
+                     const baseUrl = retryResponse.url.replace(/\/api\/auth\/login\/?$/, '') || serverUrl;
+                     console.log('Auto-login: Retry success (fetch), setting activeUrl to:', baseUrl);
                      setActiveUrl(baseUrl);
                      return { status: retryResponse.status, data: await retryResponse.json() };
                 }
@@ -254,6 +261,14 @@ const AppInitializer: React.FC<AppInitializerProps> = ({ children }) => {
                 if (status >= 200 && status < 300) {
                     const { token, user } = data;
                     setStatusMessage('登录成功，正在进入...');
+                    
+                    // Ensure activeUrl is set before setAuth to avoid race condition
+                    const currentActiveUrl = useAuthStore.getState().activeUrl;
+                    if (!currentActiveUrl || currentActiveUrl === '') {
+                      console.warn('Auto-login: activeUrl is empty after login, setting to serverUrl');
+                      setActiveUrl(urlToUse);
+                    }
+                    
                     setAuth(user, token);
                     setServerUrl(serverUrl);
                     success = true;
