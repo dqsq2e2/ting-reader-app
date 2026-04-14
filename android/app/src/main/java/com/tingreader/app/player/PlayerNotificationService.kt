@@ -72,7 +72,7 @@ class PlayerNotificationService : Service() {
     private var channelId = "tingreader_channel"
     private var channelName = "TingReader Channel"
 
-    private var currentPlaylist: List<ChapterInfo> = emptyList()
+    internal var currentPlaylist: List<ChapterInfo> = emptyList()
     var currentBookTitle: String = ""
     private var currentBookAuthor: String = ""
     private var currentCoverUrl: String = ""
@@ -84,6 +84,15 @@ class PlayerNotificationService : Service() {
     private var sleepTimerEndTime: Long = 0
     private var sleepTimerRemainingWhenPaused: Long = 0
     private var hasSkippedIntro: Boolean = false
+    
+    // 进度保存相关 - 改为 internal 以便 Listener 访问
+    private var lastSavedPosition: Long = 0
+    private var lastSavedTime: Long = 0
+    private val SAVE_INTERVAL_MS = 5000L // 5秒保存一次
+    internal var currentBookId: String = ""
+    internal var currentChapterId: String = ""
+    private var apiBaseUrl: String = ""
+    private var authToken: String = ""
 
     data class ChapterInfo(
         val id: String,
@@ -112,8 +121,23 @@ class PlayerNotificationService : Service() {
     }
 
     override fun onDestroy() {
-        Log.d(tag, "onDestroy")
+        Log.d(tag, "onDestroy - Service is being destroyed")
         isStarted = false
+        
+        // 在服务销毁前，通知前端保存进度（如果正在播放）
+        if (mPlayer.isPlaying || mPlayer.currentPosition > 0) {
+            val position = mPlayer.currentPosition
+            val duration = mPlayer.duration
+            Log.d(tag, "Service destroying, notifying position: $position")
+            clientEventEmitter?.onPositionUpdate(position, duration)
+            
+            // 给前端一点时间保存进度
+            try {
+                Thread.sleep(500)
+            } catch (e: InterruptedException) {
+                Log.w(tag, "Sleep interrupted during destroy")
+            }
+        }
         
         positionUpdateTimer?.cancel()
         positionUpdateTimer = null
@@ -276,6 +300,10 @@ class PlayerNotificationService : Service() {
                         }
                     }
                     
+                    // ⭐ 关键修复：Android 端直接保存进度到服务器（不依赖前端）
+                    saveProgressToServer(position, false)
+                    
+                    // 仍然通知前端（如果前端在前台，可以更新UI）
                     clientEventEmitter?.onPositionUpdate(position, duration)
                 } else {
                     // 暂停时：保存剩余时间
@@ -298,7 +326,10 @@ class PlayerNotificationService : Service() {
         playWhenReady: Boolean,
         skipIntro: Int,
         skipOutro: Int,
-        ignoreAudioFocus: Boolean
+        ignoreAudioFocus: Boolean,
+        bookId: String,
+        apiBaseUrl: String,
+        authToken: String
     ) {
         if (!isStarted) {
             Log.i(tag, "preparePlaylist: foreground service not started - Starting service")
@@ -323,6 +354,18 @@ class PlayerNotificationService : Service() {
         this.hasSkippedIntro = false
         currentBookAuthor = bookAuthor
         currentCoverUrl = coverUrl
+        
+        // 保存进度相关信息
+        this.currentBookId = bookId
+        this.apiBaseUrl = apiBaseUrl
+        this.authToken = authToken
+        this.lastSavedPosition = 0
+        this.lastSavedTime = 0
+        
+        // 如果有章节，设置当前章节ID
+        if (startChapterIndex >= 0 && startChapterIndex < playlist.size) {
+            this.currentChapterId = playlist[startChapterIndex].id
+        }
         
         // Load cover image asynchronously
         loadCoverImage(coverUrl)
@@ -401,7 +444,16 @@ class PlayerNotificationService : Service() {
     }
 
     fun pause() {
+        val position = mPlayer.currentPosition
         mPlayer.pause()
+        
+        Log.d(tag, "⏸️ Paused at position: $position")
+        
+        // ⭐ 暂停时强制立即保存进度到服务器
+        saveProgressToServer(position, true)
+        
+        // 仍然通知前端（如果前端在前台，可以更新UI）
+        clientEventEmitter?.onPositionUpdate(position, mPlayer.duration)
     }
 
     fun seekTo(position: Long) {
@@ -417,6 +469,12 @@ class PlayerNotificationService : Service() {
 
     fun setPlaybackSpeed(speed: Float) {
         mPlayer.setPlaybackSpeed(speed)
+    }
+    
+    fun setVolume(volume: Float) {
+        // ExoPlayer 的音量范围是 0.0 到 1.0
+        mPlayer.volume = volume.coerceIn(0f, 1f)
+        Log.d(tag, "Volume set to: $volume")
     }
 
     fun setSleepTimer(minutes: Int) {
@@ -441,6 +499,67 @@ class PlayerNotificationService : Service() {
         if (sleepTimerEndTime <= 0) return 0
         val remaining = (sleepTimerEndTime - System.currentTimeMillis()) / 1000
         return if (remaining > 0) remaining.toInt() else 0
+    }
+    
+    // 保存进度到服务器（Android 端直接保存，不依赖前端）
+    // internal 以便 Listener 可以调用
+    internal fun saveProgressToServer(position: Long, force: Boolean = false) {
+        if (currentBookId.isEmpty() || currentChapterId.isEmpty() || apiBaseUrl.isEmpty() || authToken.isEmpty()) {
+            return
+        }
+        
+        val currentTime = System.currentTimeMillis()
+        val positionSeconds = position / 1000
+        
+        // 节流：位置变化小于3秒且不是强制保存，跳过
+        if (!force) {
+            if (Math.abs(positionSeconds - lastSavedPosition / 1000) < 3) {
+                return
+            }
+            // 时间间隔小于5秒，跳过
+            if (currentTime - lastSavedTime < SAVE_INTERVAL_MS) {
+                return
+            }
+        }
+        
+        // 在后台线程执行网络请求
+        Thread {
+            try {
+                val url = java.net.URL("$apiBaseUrl/api/progress")
+                val connection = url.openConnection() as java.net.HttpURLConnection
+                connection.requestMethod = "POST"
+                connection.setRequestProperty("Content-Type", "application/json")
+                connection.setRequestProperty("Authorization", "Bearer $authToken")
+                connection.doOutput = true
+                connection.connectTimeout = 5000
+                connection.readTimeout = 5000
+                
+                val jsonBody = """
+                    {
+                        "bookId": "$currentBookId",
+                        "chapterId": "$currentChapterId",
+                        "position": $positionSeconds
+                    }
+                """.trimIndent()
+                
+                connection.outputStream.use { os ->
+                    os.write(jsonBody.toByteArray())
+                }
+                
+                val responseCode = connection.responseCode
+                if (responseCode == 200 || responseCode == 201) {
+                    lastSavedPosition = position
+                    lastSavedTime = currentTime
+                    Log.d(tag, "✓ Progress saved to server: ${positionSeconds}s (chapter: $currentChapterId)")
+                } else {
+                    Log.w(tag, "✗ Failed to save progress: HTTP $responseCode")
+                }
+                
+                connection.disconnect()
+            } catch (e: Exception) {
+                Log.e(tag, "✗ Error saving progress to server: ${e.message}")
+            }
+        }.start()
     }
 
     fun getCurrentPosition(): Long {
@@ -517,8 +636,20 @@ class TingPlayerListener(private val service: PlayerNotificationService) : Playe
     }
 
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-        Log.d(tag, "onMediaItemTransition: ${mediaItem?.mediaId}, reason: $reason")
+        Log.d(tag, "📖 onMediaItemTransition: ${mediaItem?.mediaId}, reason: $reason")
+        
+        // ⭐ 章节切换时，先保存旧章节的进度
+        val position = service.mPlayer.currentPosition
+        service.saveProgressToServer(position, true)
+        
+        // 更新当前章节ID
         val index = service.getCurrentChapterIndex()
+        if (index >= 0 && index < service.currentPlaylist.size) {
+            service.currentChapterId = service.currentPlaylist[index].id
+            Log.d(tag, "Chapter changed to: ${service.currentChapterId}")
+        }
+        
+        // 通知前端
         service.clientEventEmitter?.onChapterChanged(index)
     }
 }

@@ -104,6 +104,11 @@ class TingAudioPlayer : Plugin() {
             val skipOutro = call.getInt("skipOutro") ?: 0
             val ignoreAudioFocus = call.getBoolean("ignoreAudioFocus") ?: false
             
+            // ⭐ 获取进度保存所需的参数
+            val bookId = call.getString("bookId") ?: ""
+            val apiBaseUrl = call.getString("apiBaseUrl") ?: ""
+            val authToken = call.getString("authToken") ?: ""
+            
             val playlist = mutableListOf<PlayerNotificationService.ChapterInfo>()
             for (i in 0 until playlistJson.length()) {
                 val chapterJson = playlistJson.getJSONObject(i)
@@ -135,7 +140,10 @@ class TingAudioPlayer : Plugin() {
                             playWhenReady,
                             skipIntro,
                             skipOutro,
-                            ignoreAudioFocus
+                            ignoreAudioFocus,
+                            bookId,
+                            apiBaseUrl,
+                            authToken
                         )
                         call.resolve()
                     }, 500)
@@ -150,7 +158,10 @@ class TingAudioPlayer : Plugin() {
                         playWhenReady,
                         skipIntro,
                         skipOutro,
-                        ignoreAudioFocus
+                        ignoreAudioFocus,
+                        bookId,
+                        apiBaseUrl,
+                        authToken
                     )
                     call.resolve()
                 }
@@ -273,6 +284,19 @@ class TingAudioPlayer : Plugin() {
             val ret = JSObject()
             ret.put("remaining", remaining)
             call.resolve(ret)
+        }
+    }
+    
+    @PluginMethod
+    fun setVolume(call: PluginCall) {
+        val volume = call.getFloat("volume") ?: run {
+            call.reject("Missing volume parameter")
+            return
+        }
+        
+        Handler(Looper.getMainLooper()).post {
+            playerService?.setVolume(volume)
+            call.resolve()
         }
     }
     
