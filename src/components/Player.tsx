@@ -5,6 +5,7 @@ import { useLocation } from 'react-router-dom';
 import { usePlayerStore } from '../store/playerStore';
 import { useAuthStore } from '../store/authStore';
 import { useNativePlayer } from '../hooks/useNativePlayer';
+import { useWebSocket } from '../hooks/useWebSocket';
 import apiClient from '../api/client';
 import { FastAverageColor } from 'fast-average-color';
 import { 
@@ -103,6 +104,8 @@ const PlayerNative: React.FC = () => {
     ignoreAudioFocus
   } = usePlayerStore();
 
+  const { isConnected: wsConnected, sendProgress: wsSendProgress } = useWebSocket();
+
   const location = useLocation();
   const [showChapters, setShowChapters] = useState(false);
   const [showSleepTimer, setShowSleepTimer] = useState(false);
@@ -135,43 +138,66 @@ const PlayerNative: React.FC = () => {
   const [seekTime, setSeekTime] = useState(0);
   const bufferedTime = 0; // TODO: Implement buffering tracking
 
+  // 转码重试相关
+  const [shouldTranscode, setShouldTranscode] = useState(false);
+  const transcodeRetryCountRef = useRef(0);
+  const maxTranscodeRetries = 3;
+
   // 进度保存相关的 refs
   const lastSavedProgressRef = useRef<{ bookId: string; chapterId: string; position: number } | null>(null);
   const progressSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingProgressRef = useRef<{ bookId: string; chapterId: string; position: number } | null>(null);
 
-  const getStreamUrl = React.useCallback((chapterId: string) => {
-    return `${API_BASE_URL}/api/stream/${chapterId}?token=${token}`;
-  }, [API_BASE_URL, token]);
+  const getStreamUrl = React.useCallback((chapterId: string, transcode: boolean = false) => {
+    let url = `${API_BASE_URL}/api/stream/${chapterId}?token=${token}`;
+    if (transcode || shouldTranscode) {
+      url += '&transcode=mp3';
+    }
+    return url;
+  }, [API_BASE_URL, token, shouldTranscode]);
 
-  // 保存进度到服务器（带节流和重试机制）
+  // 转码重试函数的 ref（解决与 useNativePlayer 的循环依赖）
+  const retryWithTranscodeRef = useRef<() => Promise<void>>(async () => {});
+
+  // 切换书籍时重置转码状态
+  useEffect(() => {
+    setShouldTranscode(false);
+    transcodeRetryCountRef.current = 0;
+  }, [currentBook?.id]);
+
+  // 保存进度到服务器（带节流和重试机制，WebSocket 优先 + HTTP 兜底）
   const saveProgressToServer = React.useCallback(async (bookId: string, chapterId: string, position: number, force: boolean = false) => {
     // 检查是否需要保存（避免重复保存相同的进度）
     const lastSaved = lastSavedProgressRef.current;
-    if (!force && lastSaved && 
-        lastSaved.bookId === bookId && 
-        lastSaved.chapterId === chapterId && 
+    if (!force && lastSaved &&
+        lastSaved.bookId === bookId &&
+        lastSaved.chapterId === chapterId &&
         Math.abs(lastSaved.position - position) < 3) {
       return; // 位置变化小于3秒，跳过保存
     }
+
+    const pos = Math.floor(position);
+
+    // Send via WebSocket for real-time sync
+    wsSendProgress(bookId, chapterId, pos);
 
     try {
       await apiClient.post('/api/progress', {
         bookId,
         chapterId,
-        position: Math.floor(position)
+        position: pos
       });
-      
+
       // 保存成功，更新最后保存的进度
-      lastSavedProgressRef.current = { bookId, chapterId, position: Math.floor(position) };
+      lastSavedProgressRef.current = { bookId, chapterId, position: pos };
       pendingProgressRef.current = null;
-      console.log(`✓ 进度已保存: ${Math.floor(position)}s`);
+      console.log(`✓ 进度已保存: ${pos}s`);
     } catch (err) {
-      console.error('✗ 同步进度失败:', err);
+      console.error('✗ HTTP进度同步失败:', err);
       // 保存失败，记录待保存的进度（稍后重试）
-      pendingProgressRef.current = { bookId, chapterId, position: Math.floor(position) };
+      pendingProgressRef.current = { bookId, chapterId, position: pos };
     }
-  }, []);
+  }, [wsSendProgress]);
 
   // 节流保存进度（每5秒最多保存一次）
   const throttledSaveProgress = React.useCallback((bookId: string, chapterId: string, position: number) => {
@@ -240,10 +266,58 @@ const PlayerNative: React.FC = () => {
       setIsPlaying(false);
     },
     onPlaybackError: (error) => {
-      console.error('播放错误:', error);
-      alert(`播放出错: ${error}`);
+      console.warn('播放错误:', error);
+      // 静默重试转码，不弹窗打扰用户
+      retryWithTranscodeRef.current();
     },
   });
+
+  // 静默重试：切换为转码流重新播放（定义在 useNativePlayer 之后，避免循环引用）
+  const retryWithTranscode = React.useCallback(async () => {
+    if (shouldTranscode || transcodeRetryCountRef.current >= maxTranscodeRetries) return;
+
+    transcodeRetryCountRef.current += 1;
+    console.log(`🔄 静默重试转码 (${transcodeRetryCountRef.current}/${maxTranscodeRetries})`);
+
+    try {
+      const currentIndex = await nativePlayer.getCurrentChapterIndex();
+      const currentPos = await nativePlayer.getCurrentPosition();
+
+      const chapterList = allChapters.map(ch => ({
+        id: ch.id,
+        title: ch.title,
+        url: getStreamUrl(ch.id, true),
+        duration: ch.duration || 0
+      }));
+
+      setShouldTranscode(true);
+
+      await nativePlayer.preparePlaylist(
+        chapterList,
+        currentBook?.title || '',
+        currentBook?.author || '',
+        getCoverUrl(currentBook?.coverUrl, currentBook?.libraryId, currentBook?.id),
+        currentIndex >= 0 ? currentIndex : 0,
+        currentPos > 0 ? currentPos : 0,
+        true,
+        currentBook?.skipIntro || 0,
+        currentBook?.skipOutro || 0,
+        usePlayerStore.getState().ignoreAudioFocus,
+        currentBook?.id || '',
+        API_BASE_URL,
+        token || ''
+      );
+
+      console.log('✅ 已切换到转码流播放');
+    } catch (e) {
+      console.error('转码重试失败:', e);
+    }
+  }, [shouldTranscode, allChapters, currentBook, getStreamUrl, API_BASE_URL, token, nativePlayer]);
+
+  // 将 retryWithTranscode 注入 ref，供 onPlaybackError 调用
+  useEffect(() => {
+    retryWithTranscodeRef.current = retryWithTranscode;
+  }, [retryWithTranscode]);
 
   // 监听暗色模式变化
   useEffect(() => {
