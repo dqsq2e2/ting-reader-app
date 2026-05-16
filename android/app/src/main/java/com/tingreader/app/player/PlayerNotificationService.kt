@@ -92,6 +92,7 @@ class PlayerNotificationService : Service() {
     private val SAVE_INTERVAL_MS = 5000L // 5秒保存一次
     internal var currentBookId: String = ""
     internal var currentChapterId: String = ""
+    private var currentChapterDuration: Long = 0 // 当前章节时长(ms)，用于章节切换时保存100%进度
     private var apiBaseUrl: String = ""
     private var authToken: String = ""
 
@@ -372,9 +373,10 @@ class PlayerNotificationService : Service() {
         this.lastSavedPosition = 0
         this.lastSavedTime = 0
         
-        // 如果有章节，设置当前章节ID
+        // 如果有章节，设置当前章节ID和时长
         if (startChapterIndex >= 0 && startChapterIndex < playlist.size) {
             this.currentChapterId = playlist[startChapterIndex].id
+            this.currentChapterDuration = (playlist[startChapterIndex].duration * 1000).toLong()
         }
         
         // Load cover image asynchronously
@@ -626,6 +628,14 @@ class PlayerNotificationService : Service() {
         }.start()
     }
 
+    // 保存指定章节的进度（用于章节切换时保存旧章节）
+    internal fun saveProgressToServerWithChapter(chapterId: String, position: Long, force: Boolean = false) {
+        val saved = currentChapterId
+        currentChapterId = chapterId
+        saveProgressToServer(position, force)
+        currentChapterId = saved
+    }
+
     // 保存进度到服务器（Android 端直接保存，不依赖前端）
     // internal 以便 Listener 可以调用
     internal fun saveProgressToServer(position: Long, force: Boolean = false) {
@@ -764,18 +774,25 @@ class TingPlayerListener(private val service: PlayerNotificationService) : Playe
 
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
         Log.d(tag, "📖 onMediaItemTransition: ${mediaItem?.mediaId}, reason: $reason")
-        
-        // ⭐ 章节切换时，先保存旧章节的进度
-        val position = service.mPlayer.currentPosition
-        service.saveProgressToServer(position, true)
-        
-        // 更新当前章节ID
+
+        // 保存旧章节进度——用章节时长标记为已播完
+        // 不能用 mPlayer.currentPosition（此时已是新章节位置）
+        val oldChapterId = service.currentChapterId
+        val oldDuration = service.currentChapterDuration
+        if (oldChapterId.isNotEmpty() && oldDuration > 0) {
+            Log.d(tag, "Saving old chapter as completed: $oldChapterId (${oldDuration}ms)")
+            // 强制保存旧章节进度为 100%
+            service.saveProgressToServerWithChapter(oldChapterId, oldDuration, true)
+        }
+
+        // 更新当前章节ID和时长
         val index = service.getCurrentChapterIndex()
         if (index >= 0 && index < service.currentPlaylist.size) {
             service.currentChapterId = service.currentPlaylist[index].id
+            service.currentChapterDuration = (service.currentPlaylist[index].duration * 1000).toLong()
             Log.d(tag, "Chapter changed to: ${service.currentChapterId}")
         }
-        
+
         // 通知前端
         service.clientEventEmitter?.onChapterChanged(index)
     }
