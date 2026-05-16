@@ -104,7 +104,7 @@ const PlayerNative: React.FC = () => {
     ignoreAudioFocus
   } = usePlayerStore();
 
-  const { isConnected: wsConnected, sendProgress: wsSendProgress } = useWebSocket();
+  const { sendProgress: wsSendProgress } = useWebSocket();
 
   const location = useLocation();
   const [showChapters, setShowChapters] = useState(false);
