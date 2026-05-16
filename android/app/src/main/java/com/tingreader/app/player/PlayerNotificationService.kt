@@ -34,6 +34,7 @@ import com.google.android.exoplayer2.upstream.DefaultHttpDataSource
 import com.tingreader.app.R
 import kotlin.concurrent.schedule
 import okhttp3.*
+import java.util.*
 import java.util.concurrent.TimeUnit
 
 class PlayerNotificationService : Service() {
@@ -92,7 +93,7 @@ class PlayerNotificationService : Service() {
     private val SAVE_INTERVAL_MS = 5000L // 5秒保存一次
     internal var currentBookId: String = ""
     internal var currentChapterId: String = ""
-    private var currentChapterDuration: Long = 0 // 当前章节时长(ms)，用于章节切换时保存100%进度
+    internal var currentChapterDuration: Long = 0 // 当前章节时长(ms)，用于章节切换时保存100%进度
     private var apiBaseUrl: String = ""
     private var authToken: String = ""
 
@@ -617,7 +618,7 @@ class PlayerNotificationService : Service() {
 
     private fun scheduleWsReconnect() {
         if (wsReconnectAttempts >= WS_MAX_RECONNECT) return
-        val delay = Math.min(1000L * Math.pow(2.0, wsReconnectAttempts.toDouble()), 30000L)
+        val delay = Math.min((1000L * Math.pow(2.0, wsReconnectAttempts.toDouble())).toLong(), 30000L)
         wsReconnectAttempts++
         Log.d(tag, "WebSocket 将在 ${delay}ms 后重连 (第 $wsReconnectAttempts 次)")
         Thread {
