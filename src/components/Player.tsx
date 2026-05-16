@@ -349,11 +349,27 @@ const PlayerNative: React.FC = () => {
       await forceSaveProgress();
     });
 
-    // 应用恢复时的监听（用于日志记录，不做进度恢复）
-    const resumeListener = CapacitorApp.addListener('resume', () => {
-      console.log('▶️ 应用恢复');
-      // 注意：不在这里恢复本地进度，因为这是多端同步项目
-      // 进度应该从服务器获取，确保多端数据一致
+    // 应用恢复时同步原生播放器状态，防止 JS 层用冻结的旧数据覆盖正确进度
+    const resumeListener = CapacitorApp.addListener('resume', async () => {
+      console.log('▶️ 应用恢复，同步原生播放器状态');
+      try {
+        const currentIndex = await nativePlayer.getCurrentChapterIndex();
+        const currentPos = await nativePlayer.getCurrentPosition();
+        if (currentIndex >= 0 && allChapters[currentIndex]) {
+          const syncedChapter = allChapters[currentIndex];
+          console.log(`  同步章节: ${syncedChapter.title}, 位置: ${currentPos}s`);
+          usePlayerStore.setState({
+            currentChapter: syncedChapter,
+            currentTime: currentPos
+          });
+          // 同步后立即保存一次正确进度
+          if (currentBook) {
+            saveProgressToServer(currentBook.id, syncedChapter.id, currentPos, true);
+          }
+        }
+      } catch (e) {
+        console.error('恢复时同步状态失败:', e);
+      }
     });
 
     return () => {
