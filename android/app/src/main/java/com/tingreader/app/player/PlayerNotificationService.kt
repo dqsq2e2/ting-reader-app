@@ -33,7 +33,8 @@ import com.google.android.exoplayer2.ui.PlayerNotificationManager
 import com.google.android.exoplayer2.upstream.DefaultHttpDataSource
 import com.tingreader.app.R
 import kotlin.concurrent.schedule
-import java.util.*
+import okhttp3.*
+import java.util.concurrent.TimeUnit
 
 class PlayerNotificationService : Service() {
 
@@ -94,6 +95,14 @@ class PlayerNotificationService : Service() {
     private var apiBaseUrl: String = ""
     private var authToken: String = ""
 
+    // WebSocket 实时同步
+    private var wsClient: OkHttpClient? = null
+    private var wsSocket: WebSocket? = null
+    private var wsReconnectAttempts: Int = 0
+    private val WS_MAX_RECONNECT = 20
+    private var wsTimer: java.util.Timer? = null
+    private var lastWsProgress: Long = 0
+
     data class ChapterInfo(
         val id: String,
         val title: String,
@@ -141,7 +150,8 @@ class PlayerNotificationService : Service() {
         
         positionUpdateTimer?.cancel()
         positionUpdateTimer = null
-        
+        disconnectWebSocket()
+
         playerNotificationManager.setPlayer(null)
         mPlayer.release()
         mediaSession.release()
@@ -400,6 +410,12 @@ class PlayerNotificationService : Service() {
         mPlayer.playWhenReady = playWhenReady
         mPlayer.prepare()
 
+        // 连接 WebSocket 实时同步
+        disconnectWebSocket() // 先断开旧连接
+        wsReconnectAttempts = 0
+        lastWsProgress = 0
+        connectWebSocket()
+
         Log.d(tag, "Prepared playlist with ${playlist.size} chapters, starting at chapter $startChapterIndex, position $startPosition")
     }
     
@@ -446,10 +462,12 @@ class PlayerNotificationService : Service() {
     fun pause() {
         val position = mPlayer.currentPosition
         mPlayer.pause()
-        
+
         Log.d(tag, "⏸️ Paused at position: $position")
-        
-        // ⭐ 暂停时强制立即保存进度到服务器
+
+        // 立即通过 WS 发送当前进度
+        sendWsProgress(position)
+        // 暂停时强制立即保存进度到服务器
         saveProgressToServer(position, true)
         
         // 仍然通知前端（如果前端在前台，可以更新UI）
@@ -501,9 +519,118 @@ class PlayerNotificationService : Service() {
         return if (remaining > 0) remaining.toInt() else 0
     }
     
+    // ===== WebSocket 实时进度同步 =====
+
+    private fun connectWebSocket() {
+        if (apiBaseUrl.isEmpty() || authToken.isEmpty()) return
+        if (wsSocket != null) return
+
+        try {
+            val wsUrl = apiBaseUrl
+                .replace("http://", "ws://")
+                .replace("https://", "wss://")
+                .trimEnd('/') + "/api/ws?token=" + authToken
+
+            wsClient = OkHttpClient.Builder()
+                .readTimeout(0, TimeUnit.MILLISECONDS) // No read timeout for WS
+                .build()
+
+            val request = Request.Builder().url(wsUrl).build()
+
+            wsSocket = wsClient!!.newWebSocket(request, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    Log.d(tag, "🔌 WebSocket 已连接")
+                    wsReconnectAttempts = 0
+                    startWsProgressTimer()
+                }
+
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    // 服务器推送的进度更新（多端同步），暂不处理
+                }
+
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    Log.d(tag, "WebSocket onClosing: $code $reason")
+                    webSocket.close(1000, null)
+                }
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    Log.d(tag, "WebSocket 已关闭: $code $reason")
+                    wsSocket = null
+                    stopWsProgressTimer()
+                    scheduleWsReconnect()
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    Log.w(tag, "WebSocket 错误: ${t.message}")
+                    wsSocket = null
+                    stopWsProgressTimer()
+                    scheduleWsReconnect()
+                }
+            })
+
+            Log.d(tag, "正在连接 WebSocket: $wsUrl")
+        } catch (e: Exception) {
+            Log.e(tag, "WebSocket 连接异常: ${e.message}")
+            scheduleWsReconnect()
+        }
+    }
+
+    private fun disconnectWebSocket() {
+        stopWsProgressTimer()
+        wsReconnectAttempts = WS_MAX_RECONNECT // 阻止重连
+        wsSocket?.close(1000, "Service destroyed")
+        wsSocket = null
+        wsClient?.dispatcher?.executorService?.shutdown()
+        wsClient = null
+    }
+
+    private fun sendWsProgress(position: Long) {
+        val sock = wsSocket ?: return
+        if (currentBookId.isEmpty() || currentChapterId.isEmpty()) return
+
+        val pos = position / 1000
+        if (pos == lastWsProgress) return
+        lastWsProgress = pos
+
+        val json = """{"type":"progress_update","book_id":"$currentBookId","chapter_id":"$currentChapterId","position":$pos}"""
+        sock.send(json)
+    }
+
+    private fun startWsProgressTimer() {
+        stopWsProgressTimer()
+        wsTimer = java.util.Timer()
+        wsTimer?.schedule(0, 2000) { // 每2秒发送一次
+            try {
+                if (mPlayer.isPlaying) {
+                    sendWsProgress(mPlayer.currentPosition)
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun stopWsProgressTimer() {
+        wsTimer?.cancel()
+        wsTimer = null
+    }
+
+    private fun scheduleWsReconnect() {
+        if (wsReconnectAttempts >= WS_MAX_RECONNECT) return
+        val delay = Math.min(1000L * Math.pow(2.0, wsReconnectAttempts.toDouble()), 30000L)
+        wsReconnectAttempts++
+        Log.d(tag, "WebSocket 将在 ${delay}ms 后重连 (第 $wsReconnectAttempts 次)")
+        Thread {
+            try {
+                Thread.sleep(delay)
+                connectWebSocket()
+            } catch (_: InterruptedException) {}
+        }.start()
+    }
+
     // 保存进度到服务器（Android 端直接保存，不依赖前端）
     // internal 以便 Listener 可以调用
     internal fun saveProgressToServer(position: Long, force: Boolean = false) {
+        // WebSocket 实时同步（不节流）
+        sendWsProgress(position)
         if (currentBookId.isEmpty() || currentChapterId.isEmpty() || apiBaseUrl.isEmpty() || authToken.isEmpty()) {
             return
         }

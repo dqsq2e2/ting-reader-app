@@ -165,8 +165,11 @@ const PlayerNative: React.FC = () => {
     transcodeRetryCountRef.current = 0;
   }, [currentBook?.id]);
 
-  // 保存进度到服务器（带节流和重试机制，WebSocket 优先 + HTTP 兜底）
+  // 保存进度到服务器（原生平台由 Android 层接管，JS 仅用于 Web 平台）
   const saveProgressToServer = React.useCallback(async (bookId: string, chapterId: string, position: number, force: boolean = false) => {
+    // 原生平台：进度同步由 PlayerNotificationService 原生层处理（HTTP + WebSocket）
+    if (isNative) return;
+
     // 检查是否需要保存（避免重复保存相同的进度）
     const lastSaved = lastSavedProgressRef.current;
     if (!force && lastSaved &&
