@@ -200,7 +200,7 @@ const PlayerNative: React.FC = () => {
       // 保存失败，记录待保存的进度（稍后重试）
       pendingProgressRef.current = { bookId, chapterId, position: pos };
     }
-  }, [wsSendProgress]);
+  }, [wsSendProgress, isNative]);
 
   // 节流保存进度（每5秒最多保存一次）
   const throttledSaveProgress = React.useCallback((bookId: string, chapterId: string, position: number) => {
@@ -380,7 +380,7 @@ const PlayerNative: React.FC = () => {
       pauseListener.then(listener => listener.remove());
       resumeListener.then(listener => listener.remove());
     };
-  }, [isNative, forceSaveProgress]);
+  }, [isNative, forceSaveProgress, allChapters, currentBook, nativePlayer, saveProgressToServer]);
 
   // 组件卸载时保存进度
   useEffect(() => {
