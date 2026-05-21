@@ -139,7 +139,7 @@ const PlayerNative: React.FC = () => {
   const bufferedTime = 0; // TODO: Implement buffering tracking
 
   // 转码重试相关
-  const [shouldTranscode, setShouldTranscode] = useState(false);
+  const [useHlsTranscode, setUseHlsTranscode] = useState(false);
   const transcodeRetryCountRef = useRef(0);
   const maxTranscodeRetries = 3;
 
@@ -148,20 +148,21 @@ const PlayerNative: React.FC = () => {
   const progressSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingProgressRef = useRef<{ bookId: string; chapterId: string; position: number } | null>(null);
 
-  const getStreamUrl = React.useCallback((chapterId: string, transcode: boolean = false) => {
+  const getStreamUrl = React.useCallback((chapterId: string, useHls: boolean = false) => {
     let url = `${API_BASE_URL}/api/stream/${chapterId}?token=${token}`;
-    if (transcode || shouldTranscode) {
-      url += '&transcode=mp3';
+    if (useHls) {
+      // 播放失败后使用 HLS 转码
+      url += '&transcode=hls';
     }
     return url;
-  }, [API_BASE_URL, token, shouldTranscode]);
+  }, [API_BASE_URL, token]);
 
   // 转码重试函数的 ref（解决与 useNativePlayer 的循环依赖）
   const retryWithTranscodeRef = useRef<() => Promise<void>>(async () => {});
 
   // 切换书籍时重置转码状态
   useEffect(() => {
-    setShouldTranscode(false);
+    setUseHlsTranscode(false);
     transcodeRetryCountRef.current = 0;
   }, [currentBook?.id]);
 
@@ -270,30 +271,61 @@ const PlayerNative: React.FC = () => {
     },
     onPlaybackError: (error) => {
       console.warn('播放错误:', error);
-      // 静默重试转码，不弹窗打扰用户
+      // 静默重试：切换到 HLS 转码
       retryWithTranscodeRef.current();
     },
   });
 
-  // 静默重试：切换为转码流重新播放（定义在 useNativePlayer 之后，避免循环引用）
+  // 静默重试：切换为 HLS 转码流重新播放
   const retryWithTranscode = React.useCallback(async () => {
-    if (shouldTranscode || transcodeRetryCountRef.current >= maxTranscodeRetries) return;
+    if (useHlsTranscode || transcodeRetryCountRef.current >= maxTranscodeRetries) {
+      console.error('❌ HLS 转码也失败了，无法播放');
+      return;
+    }
 
     transcodeRetryCountRef.current += 1;
-    console.log(`🔄 静默重试转码 (${transcodeRetryCountRef.current}/${maxTranscodeRetries})`);
+    console.log(`🔄 静默重试 HLS 转码 (${transcodeRetryCountRef.current}/${maxTranscodeRetries})`);
 
     try {
       const currentIndex = await nativePlayer.getCurrentChapterIndex();
       const currentPos = await nativePlayer.getCurrentPosition();
 
-      const chapterList = allChapters.map(ch => ({
-        id: ch.id,
-        title: ch.title,
-        url: getStreamUrl(ch.id, true),
-        duration: ch.duration || 0
-      }));
+      // 请求 HLS 转码，获取播放列表 URL
+      const chapterListPromises = allChapters.map(async (ch) => {
+        try {
+          const response = await fetch(`${API_BASE_URL}/api/stream/${ch.id}?token=${token}&transcode=hls`);
+          if (!response.ok) {
+            console.error(`HLS 转码请求失败: ${ch.title}`, response.status);
+            return {
+              id: ch.id,
+              title: ch.title,
+              url: getStreamUrl(ch.id, false), // 降级到直接播放
+              duration: ch.duration || 0
+            };
+          }
+          const data = await response.json();
+          const playlistUrl = `${API_BASE_URL}${data.playlist_url}?token=${token}`;
+          console.log(`✅ HLS 播放列表: ${ch.title} -> ${playlistUrl}`);
+          return {
+            id: ch.id,
+            title: ch.title,
+            url: playlistUrl,
+            duration: ch.duration || 0
+          };
+        } catch (e) {
+          console.error(`HLS 转码异常: ${ch.title}`, e);
+          return {
+            id: ch.id,
+            title: ch.title,
+            url: getStreamUrl(ch.id, false), // 降级到直接播放
+            duration: ch.duration || 0
+          };
+        }
+      });
 
-      setShouldTranscode(true);
+      const chapterList = await Promise.all(chapterListPromises);
+
+      setUseHlsTranscode(true);
 
       await nativePlayer.preparePlaylist(
         chapterList,
@@ -311,11 +343,11 @@ const PlayerNative: React.FC = () => {
         token || ''
       );
 
-      console.log('✅ 已切换到转码流播放');
+      console.log('✅ 已切换到 HLS 转码流播放');
     } catch (e) {
-      console.error('转码重试失败:', e);
+      console.error('HLS 转码重试失败:', e);
     }
-  }, [shouldTranscode, allChapters, currentBook, getStreamUrl, API_BASE_URL, token, nativePlayer]);
+  }, [useHlsTranscode, allChapters, currentBook, getStreamUrl, API_BASE_URL, token, nativePlayer]);
 
   // 将 retryWithTranscode 注入 ref，供 onPlaybackError 调用
   useEffect(() => {
@@ -457,10 +489,11 @@ const PlayerNative: React.FC = () => {
 
     const prepareNativePlaylist = async () => {
       try {
+        // 首次播放：尝试直接播放源文件（Direct 模式）
         const chapterList = allChapters.map(ch => ({
           id: ch.id,
           title: ch.title,
-          url: getStreamUrl(ch.id),
+          url: getStreamUrl(ch.id, false),  // 不使用转码，直接播放
           duration: ch.duration || 0
         }));
 
@@ -483,7 +516,7 @@ const PlayerNative: React.FC = () => {
           token            // ⭐ 传递认证 token
         );
 
-        console.log(`已准备播放列表: ${allChapters.length} 集，从第 ${startIndex} 集开始`);
+        console.log(`已准备播放列表: ${allChapters.length} 集，从第 ${startIndex} 集开始 (Direct 模式)`);
       } catch (error) {
         console.error('准备播放列表失败:', error);
       }

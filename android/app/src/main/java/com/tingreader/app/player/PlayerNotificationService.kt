@@ -27,8 +27,10 @@ import com.google.android.exoplayer2.*
 import com.google.android.exoplayer2.audio.AudioAttributes
 import com.google.android.exoplayer2.ext.mediasession.MediaSessionConnector
 import com.google.android.exoplayer2.ext.mediasession.TimelineQueueNavigator
+import com.google.android.exoplayer2.source.DefaultMediaSourceFactory
 import com.google.android.exoplayer2.source.MediaSource
 import com.google.android.exoplayer2.source.ProgressiveMediaSource
+import com.google.android.exoplayer2.source.hls.HlsMediaSource
 import com.google.android.exoplayer2.ui.PlayerNotificationManager
 import com.google.android.exoplayer2.upstream.DefaultHttpDataSource
 import com.tingreader.app.R
@@ -404,8 +406,20 @@ class PlayerNotificationService : Service() {
 
         val dataSourceFactory = DefaultHttpDataSource.Factory()
         val mediaSources = mediaItems.map { mediaItem ->
-            ProgressiveMediaSource.Factory(dataSourceFactory)
-                .createMediaSource(mediaItem)
+            // 检测 HLS 流：URL 包含 .m3u8
+            val uri = mediaItem.localConfiguration?.uri
+            val isHls = uri?.toString()?.contains(".m3u8") ?: false
+            
+            if (isHls) {
+                Log.d(tag, "Detected HLS stream for chapter ${mediaItem.mediaId}: $uri")
+                // 使用专门的 HlsMediaSource 以正确解析时长
+                com.google.android.exoplayer2.source.hls.HlsMediaSource.Factory(dataSourceFactory)
+                    .createMediaSource(mediaItem)
+            } else {
+                // 非 HLS 流，使用 ProgressiveMediaSource
+                ProgressiveMediaSource.Factory(dataSourceFactory)
+                    .createMediaSource(mediaItem)
+            }
         }
 
         mPlayer.setMediaSources(mediaSources)
