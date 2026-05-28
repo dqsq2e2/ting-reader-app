@@ -259,6 +259,10 @@ const PlayerNative: React.FC = () => {
         const newChapter = allChapters[chapterIndex];
         console.log(`原生播放器章节变化: ${newChapter.title} (index: ${chapterIndex})`);
         
+        // 重置转码状态，让新章节可以独立触发 HLS 重试
+        setUseHlsTranscode(false);
+        transcodeRetryCountRef.current = 0;
+        
         // 设置 prevChapterIdRef 防止循环同步
         prevChapterIdRef.current = newChapter.id;
         
@@ -278,8 +282,13 @@ const PlayerNative: React.FC = () => {
 
   // 静默重试：切换为 HLS 转码流重新播放
   const retryWithTranscode = React.useCallback(async () => {
-    if (useHlsTranscode || transcodeRetryCountRef.current >= maxTranscodeRetries) {
-      console.error('❌ HLS 转码也失败了，无法播放');
+    if (useHlsTranscode) {
+      // 已在 HLS 模式：当前章节直接失败，不重试（避免无限循环）
+      console.error('❌ HLS 转码也失败了，无法播放当前章节');
+      return;
+    }
+    if (transcodeRetryCountRef.current >= maxTranscodeRetries) {
+      console.error('❌ 超过最大重试次数，无法播放');
       return;
     }
 
@@ -290,40 +299,54 @@ const PlayerNative: React.FC = () => {
       const currentIndex = await nativePlayer.getCurrentChapterIndex();
       const currentPos = await nativePlayer.getCurrentPosition();
 
-      // 请求 HLS 转码，获取播放列表 URL
-      const chapterListPromises = allChapters.map(async (ch) => {
-        try {
-          const response = await fetch(`${API_BASE_URL}/api/stream/${ch.id}?token=${token}&transcode=hls`);
-          if (!response.ok) {
-            console.error(`HLS 转码请求失败: ${ch.title}`, response.status);
-            return {
+      // 只对当前章节请求 HLS 转码（避免超出后端并发转码限制 max 3 sessions）
+      // 其他章节使用带 transcode=hls 参数的直接 URL，ExoPlayer 播放时按需触发转码
+      const currentChapterId = allChapters[currentIndex >= 0 ? currentIndex : 0]?.id;
+      const chapterList: { id: string; title: string; url: string; duration: number }[] = [];
+
+      for (const ch of allChapters) {
+        if (ch.id === currentChapterId) {
+          // 当前章节：立即请求 HLS 转码并获取播放列表
+          try {
+            const response = await fetch(`${API_BASE_URL}/api/stream/${ch.id}?token=${token}&transcode=hls`);
+            if (!response.ok) {
+              console.error(`HLS 转码请求失败: ${ch.title}`, response.status);
+              chapterList.push({
+                id: ch.id,
+                title: ch.title,
+                url: getStreamUrl(ch.id, false), // 降级到直接播放
+                duration: ch.duration || 0
+              });
+              continue;
+            }
+            const data = await response.json();
+            const playlistUrl = `${API_BASE_URL}${data.playlist_url}?token=${token}`;
+            console.log(`✅ HLS 播放列表: ${ch.title} -> ${playlistUrl}`);
+            chapterList.push({
+              id: ch.id,
+              title: ch.title,
+              url: playlistUrl,
+              duration: ch.duration || 0
+            });
+          } catch (e) {
+            console.error(`HLS 转码异常: ${ch.title}`, e);
+            chapterList.push({
               id: ch.id,
               title: ch.title,
               url: getStreamUrl(ch.id, false), // 降级到直接播放
               duration: ch.duration || 0
-            };
+            });
           }
-          const data = await response.json();
-          const playlistUrl = `${API_BASE_URL}${data.playlist_url}?token=${token}`;
-          console.log(`✅ HLS 播放列表: ${ch.title} -> ${playlistUrl}`);
-          return {
+        } else {
+          // 其他章节：使用直接流 URL（非 HLS），等章节切换时 onPlaybackError 会再次触发重试
+          chapterList.push({
             id: ch.id,
             title: ch.title,
-            url: playlistUrl,
+            url: getStreamUrl(ch.id, false),
             duration: ch.duration || 0
-          };
-        } catch (e) {
-          console.error(`HLS 转码异常: ${ch.title}`, e);
-          return {
-            id: ch.id,
-            title: ch.title,
-            url: getStreamUrl(ch.id, false), // 降级到直接播放
-            duration: ch.duration || 0
-          };
+          });
         }
-      });
-
-      const chapterList = await Promise.all(chapterListPromises);
+      }
 
       setUseHlsTranscode(true);
 
